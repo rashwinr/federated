@@ -18,8 +18,8 @@ from absl.testing import parameterized
 import tensorflow as tf
 
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import context_stack_impl
 from tensorflow_federated.python.core.impl import federated_computation_utils
+from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
 from tensorflow_federated.python.core.impl.utils import function_utils
 
 
@@ -30,24 +30,25 @@ class ComputationBuildingUtilsTest(parameterized.TestCase):
       (lambda f, x: f(f(x)),
        [('f', computation_types.FunctionType(tf.int32, tf.int32)),
         ('x', tf.int32)],
-       '(foo -> foo.f(foo.f(foo.x)))'),
+       '(FEDERATED_foo -> FEDERATED_foo.f(FEDERATED_foo.f(FEDERATED_foo.x)))'),
       (lambda f, g, x: f(g(x)),
        [('f', computation_types.FunctionType(tf.int32, tf.int32)),
         ('g', computation_types.FunctionType(tf.int32, tf.int32)),
         ('x', tf.int32)],
-       '(foo -> foo.f(foo.g(foo.x)))'),
+       '(FEDERATED_foo -> FEDERATED_foo.f(FEDERATED_foo.g(FEDERATED_foo.x)))'),
       (lambda x: (x[1], x[0]),
        (tf.int32, tf.int32),
-       '(foo -> <foo[1],foo[0]>)'),
-      (lambda: 'stuff', None, 'stuff'))
+       '(FEDERATED_foo -> <FEDERATED_foo[1],FEDERATED_foo[0]>)'),
+      (lambda: 'stuff', None, '( -> comp#'))
   # pyformat: enable
-  def zero_or_one_arg_fn_to_building_block(self, fn, parameter_type, fn_str):
-    parameter_name = 'foo'
+  def test_zero_or_one_arg_fn_to_building_block(self, fn, parameter_type,
+                                                fn_str):
+    parameter_name = 'foo' if parameter_type is not None else None
     parameter_type = computation_types.to_type(parameter_type)
     fn = function_utils.wrap_as_zero_or_one_arg_callable(fn, parameter_type)
     result = federated_computation_utils.zero_or_one_arg_fn_to_building_block(
         fn, parameter_name, parameter_type, context_stack_impl.context_stack)
-    self.assertEqual(str(result), fn_str)
+    self.assertStartsWith(str(result), fn_str)
 
 
 if __name__ == '__main__':

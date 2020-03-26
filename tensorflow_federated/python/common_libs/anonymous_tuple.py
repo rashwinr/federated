@@ -14,15 +14,10 @@
 # limitations under the License.
 """Anonymous named tuples to represent generic tuple values in computations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
+from typing import Union
 
 import attr
-import six
-from six.moves import zip
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import py_typecheck
@@ -52,7 +47,7 @@ class AnonymousTuple(object):
   list(iter(x)) == [10, 20, 30]
   dir(x) == ['bar', 'foo']
   x.foo == 10
-  x.bar == 30
+  x['bar'] == 30
   ```
 
   Note that in general, naming the members of these tuples is optional. Thus,
@@ -70,39 +65,40 @@ class AnonymousTuple(object):
     """Constructs a new anonymous named tuple with the given elements.
 
     Args:
-      elements: A list of element specifications, each being a pair consisting
-        of the element name (either a string, or None), and the element value.
-        The order is significant.
+      elements: An iterable of element specifications, each being a pair
+        consisting of the element name (either `str`, or `None`), and the
+        element value. The order is significant.
 
     Raises:
       TypeError: if the `elements` are not a list, or if any of the items on
         the list is not a pair with a string at the first position.
     """
-    py_typecheck.check_type(elements, list)
-    for e in elements:
+    py_typecheck.check_type(elements, collections.Iterable)
+    values = []
+    names = []
+    name_to_index = {}
+    reserved_names = frozenset(('_asdict',) + AnonymousTuple.__slots__)
+    for idx, e in enumerate(elements):
       if not py_typecheck.is_name_value_pair(e, name_required=False):
         raise TypeError(
             'Expected every item on the list to be a pair in which the first '
             'element is a string, found {!r}.'.format(e))
-
-    self._element_array = tuple(e[1] for e in elements)
-    self._name_to_index = {}
-    self._name_array = []
-    reserved_names = ('_asdict',) + AnonymousTuple.__slots__
-    for idx, e in enumerate(elements):
-      name = e[0]
-      self._name_array.append(name)
-      if name is None:
-        continue
+      name, value = e
       if name in reserved_names:
         raise ValueError(
             'The names in {} are reserved. You passed the name {}.'.format(
                 reserved_names, name))
-      elif name in self._name_to_index:
+      elif name in name_to_index:
         raise ValueError(
             'AnonymousTuple does not support duplicated names, but found {}'
             .format([e[0] for e in elements]))
-      self._name_to_index[name] = idx
+      names.append(name)
+      values.append(value)
+      if name is not None:
+        name_to_index[name] = idx
+    self._element_array = tuple(values)
+    self._name_to_index = name_to_index
+    self._name_array = names
     self._hash = None
 
   def __len__(self):
@@ -125,8 +121,10 @@ class AnonymousTuple(object):
     """
     return list(self._name_to_index.keys())
 
-  def __getitem__(self, key):
-    py_typecheck.check_type(key, (int, slice))
+  def __getitem__(self, key: Union[int, str, slice]):
+    py_typecheck.check_type(key, (int, str, slice))
+    if isinstance(key, str):
+      return self.__getattr__(key)
     if isinstance(key, int):
       if key < 0 or key >= len(self._element_array):
         raise IndexError(
@@ -423,8 +421,9 @@ def from_container(value, recursive=False):
   """Creates an instance of `AnonymousTuple` from a Python container.
 
   By default, this conversion is only performed at the top level for Python
-  dictionaries, `collections.OrderedDict`s, `namedtuple`s, `list`s and
-  `tuple`s. Elements of these structures are not recursively converted.
+  dictionaries, `collections.OrderedDict`s, `namedtuple`s, `list`s,
+  `tuple`s, and `attr.s` classes. Elements of these structures are not
+  recursively converted.
 
   Args:
     value: The Python container to convert.
@@ -455,9 +454,8 @@ def from_container(value, recursive=False):
     """
     if isinstance(value, AnonymousTuple):
       if recursive:
-        return AnonymousTuple([
-            (k, _convert(v, True)) for k, v in to_elements(value)
-        ])
+        return AnonymousTuple(
+            (k, _convert(v, True)) for k, v in iter_elements(value))
       else:
         return value
     elif py_typecheck.is_attrs(value):
@@ -468,22 +466,22 @@ def from_container(value, recursive=False):
     elif py_typecheck.is_named_tuple(value):
       return _convert(value._asdict(), recursive, must_be_container)
     elif isinstance(value, collections.OrderedDict):
-      items = six.iteritems(value)
+      items = value.items()
       if recursive:
-        return AnonymousTuple([(k, _convert(v, True)) for k, v in items])
+        return AnonymousTuple((k, _convert(v, True)) for k, v in items)
       else:
-        return AnonymousTuple(list(items))
+        return AnonymousTuple(items)
     elif isinstance(value, dict):
-      items = sorted(list(six.iteritems(value)))
+      items = sorted(list(value.items()))
       if recursive:
-        return AnonymousTuple([(k, _convert(v, True)) for k, v in items])
+        return AnonymousTuple((k, _convert(v, True)) for k, v in items)
       else:
         return AnonymousTuple(items)
     elif isinstance(value, (tuple, list)):
       if recursive:
-        return AnonymousTuple([(None, _convert(v, True)) for v in value])
+        return AnonymousTuple((None, _convert(v, True)) for v in value)
       else:
-        return AnonymousTuple([(None, v) for v in value])
+        return AnonymousTuple((None, v) for v in value)
     elif must_be_container:
       raise TypeError('Unable to convert a Python object of type {} into '
                       'an `AnonymousTuple`.'.format(

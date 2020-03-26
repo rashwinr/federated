@@ -1,13 +1,20 @@
-package(default_visibility = ["//tensorflow_federated/python/learning:__subpackages__"])
+package(default_visibility = [
+    # Subpackages
+    "//tensorflow_federated/python/learning/framework:__subpackages__",
+
+    # TODO(b/151441025): This package is temporary and can be removed once the
+    # dependencies between `tff.learning` and `tff.learning.framework` are
+    # cleaned up.
+    "//tensorflow_federated/python/learning:__pkg__",
+])
 
 licenses(["notice"])
 
-# This is the import for clients that contribute components to federated learning (see `../README.md`).
 py_library(
     name = "framework",
     srcs = ["__init__.py"],
-    srcs_version = "PY2AND3",
-    visibility = ["//visibility:public"],
+    srcs_version = "PY3",
+    visibility = ["//tensorflow_federated/python/learning:__pkg__"],
     deps = [
         ":encoding_utils",
         ":optimizer_utils",
@@ -18,7 +25,7 @@ py_library(
 py_library(
     name = "encoding_utils",
     srcs = ["encoding_utils.py"],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         "//tensorflow_federated/python/common_libs:py_typecheck",
         "//tensorflow_federated/python/core",
@@ -43,7 +50,7 @@ py_test(
 py_library(
     name = "optimizer_utils",
     srcs = ["optimizer_utils.py"],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         "//tensorflow_federated/python/common_libs:anonymous_tuple",
         "//tensorflow_federated/python/common_libs:py_typecheck",

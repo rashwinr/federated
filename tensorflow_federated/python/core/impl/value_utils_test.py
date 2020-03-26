@@ -21,12 +21,12 @@ from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import computations
 from tensorflow_federated.python.core.api import placements
 from tensorflow_federated.python.core.impl import computation_impl
-from tensorflow_federated.python.core.impl import context_stack_impl
 from tensorflow_federated.python.core.impl import federated_computation_context
-from tensorflow_federated.python.core.impl import transformations
 from tensorflow_federated.python.core.impl import value_impl
 from tensorflow_federated.python.core.impl import value_utils
 from tensorflow_federated.python.core.impl.compiler import building_blocks
+from tensorflow_federated.python.core.impl.compiler import tree_transformations
+from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
 
 _context_stack = context_stack_impl.context_stack
 
@@ -43,19 +43,51 @@ class ValueUtilsTest(parameterized.TestCase):
     curried = value_utils.get_curried(add_numbers)
     self.assertEqual(str(curried.type_signature), '(int32 -> (int32 -> int32))')
 
-    comp, _ = transformations.uniquify_compiled_computation_names(
+    comp, _ = tree_transformations.uniquify_compiled_computation_names(
         value_impl.ValueImpl.get_comp(curried))
     self.assertEqual(comp.compact_representation(),
                      '(arg0 -> (arg1 -> comp#1(<arg0,arg1>)))')
 
-  def test_check_federated_value_placement(self):
+  def test_ensure_federated_value(self):
 
     @computations.federated_computation(
         computation_types.FederatedType(tf.int32, placements.CLIENTS))
     def _(x):
-      value_utils.check_federated_value_placement(x, placements.CLIENTS)
+      x = value_impl.to_value(x, None, _context_stack)
+      value_utils.ensure_federated_value(x, placements.CLIENTS)
+      return x
+
+  def test_ensure_federated_value_wrong_placement(self):
+
+    @computations.federated_computation(
+        computation_types.FederatedType(tf.int32, placements.CLIENTS))
+    def _(x):
+      x = value_impl.to_value(x, None, _context_stack)
       with self.assertRaises(TypeError):
-        value_utils.check_federated_value_placement(x, placements.SERVER)
+        value_utils.ensure_federated_value(x, placements.SERVER)
+      return x
+
+  def test_ensure_federated_value_implicitly_zippable(self):
+
+    @computations.federated_computation(
+        computation_types.NamedTupleType(
+            (computation_types.FederatedType(tf.int32, placements.CLIENTS),
+             computation_types.FederatedType(tf.int32, placements.CLIENTS))))
+    def _(x):
+      x = value_impl.to_value(x, None, _context_stack)
+      value_utils.ensure_federated_value(x)
+      return x
+
+  def test_ensure_federated_value_fails_on_unzippable(self):
+
+    @computations.federated_computation(
+        computation_types.NamedTupleType(
+            (computation_types.FederatedType(tf.int32, placements.CLIENTS),
+             computation_types.FederatedType(tf.int32, placements.SERVER))))
+    def _(x):
+      x = value_impl.to_value(x, None, _context_stack)
+      with self.assertRaises(TypeError):
+        value_utils.ensure_federated_value(x)
       return x
 
 

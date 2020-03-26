@@ -14,18 +14,12 @@
 # limitations under the License.
 """Utilities for deserializing TensorFlow computations.
 
-NOTE: This is separate from `tensorflow_serialization.py` to avoid a circular
+Note: This is separate from `tensorflow_serialization.py` to avoid a circular
 dependency through `tf_computation_context.py`. The context code depends on
 the deserialization code (to implement invocation), whereas the serialization
 code depends on the context code (to invoke the Python function in context).
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import six
-from six.moves import zip
 import tensorflow as tf
 
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
@@ -97,9 +91,9 @@ def deserialize_and_call_tf_computation(computation_proto, arg, graph):
                                                   arg_type))
       else:
         input_map = {
-            k: graph.get_tensor_by_name(v) for k, v in six.iteritems(
-                tensorflow_utils.compute_map_from_bindings(
-                    computation_proto.tensorflow.parameter, arg_binding))
+            k: graph.get_tensor_by_name(v)
+            for k, v in tensorflow_utils.compute_map_from_bindings(
+                computation_proto.tensorflow.parameter, arg_binding).items()
         }
     return_elements = tensorflow_utils.extract_tensor_names_from_binding(
         computation_proto.tensorflow.result)

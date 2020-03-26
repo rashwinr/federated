@@ -20,16 +20,21 @@ import tensorflow as tf
 
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
 from tensorflow_federated.python.common_libs import anonymous_tuple
-from tensorflow_federated.python.common_libs import test as common_test
+from tensorflow_federated.python.common_libs import serialization_utils
+from tensorflow_federated.python.common_libs import test
 from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.impl import compiled_computation_transforms
-from tensorflow_federated.python.core.impl import context_stack_impl
 from tensorflow_federated.python.core.impl import tensorflow_serialization
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import proto_transformations
 from tensorflow_federated.python.core.impl.compiler import test_utils
 from tensorflow_federated.python.core.impl.compiler import tree_analysis
+from tensorflow_federated.python.core.impl.compiler import type_serialization
+from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
+from tensorflow_federated.python.core.impl.utils import tensorflow_utils
+
+tf.compat.v1.enable_v2_behavior()
 
 
 def _create_compiled_computation(py_fn, arg_type):
@@ -38,8 +43,7 @@ def _create_compiled_computation(py_fn, arg_type):
   return building_blocks.CompiledComputation(proto)
 
 
-class CompiledComputationTransformsTest(common_test.TestCase,
-                                        parameterized.TestCase):
+class CompiledComputationTransformsTest(test.TestCase, parameterized.TestCase):
 
   def test_select_graph_output_with_none_comp_raises_type_error(self):
     with self.assertRaises(TypeError):
@@ -83,8 +87,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     second_element_selected = compiled_computation_transforms.select_graph_output(
         foo, index=1)
 
-    self.assertEqual(first_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            first_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(first_element_selected.type_signature.result,
                      foo.type_signature.result[0])
     self.assertEqual(foo.proto.tensorflow.parameter,
@@ -94,8 +101,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(foo.proto.tensorflow.result.tuple.element[0].tensor,
                      first_element_selected.proto.tensorflow.result.tensor)
 
-    self.assertEqual(second_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            second_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(second_element_selected.type_signature.result,
                      foo.type_signature.result[1])
     self.assertEqual(foo.proto.tensorflow.parameter,
@@ -122,8 +132,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(second_element_selected.type_signature.result,
                      computation_types.to_type(tf.float32))
 
-    self.assertEqual(first_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            first_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(foo.proto.tensorflow.parameter,
                      first_element_selected.proto.tensorflow.parameter)
     self.assertEqual(foo.proto.tensorflow.initialize_op,
@@ -131,8 +144,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(foo.proto.tensorflow.result.tuple.element[0].tensor,
                      first_element_selected.proto.tensorflow.result.tensor)
 
-    self.assertEqual(second_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            second_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(second_element_selected.type_signature.result,
                      foo.type_signature.result[1])
     self.assertEqual(foo.proto.tensorflow.parameter,
@@ -165,8 +181,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(second_element_selected.type_signature.result,
                      nested_type2)
 
-    self.assertEqual(first_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            first_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(foo.proto.tensorflow.parameter,
                      first_element_selected.proto.tensorflow.parameter)
     self.assertEqual(foo.proto.tensorflow.initialize_op,
@@ -174,8 +193,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(foo.proto.tensorflow.result.tuple.element[0].tuple,
                      first_element_selected.proto.tensorflow.result.tuple)
 
-    self.assertEqual(second_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            second_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(second_element_selected.type_signature.result,
                      foo.type_signature.result[1])
     self.assertEqual(foo.proto.tensorflow.parameter,
@@ -206,8 +228,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(second_element_selected.type_signature.result,
                      nested_type2)
 
-    self.assertEqual(first_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            first_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(foo.proto.tensorflow.parameter,
                      first_element_selected.proto.tensorflow.parameter)
     self.assertEqual(foo.proto.tensorflow.initialize_op,
@@ -215,8 +240,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(foo.proto.tensorflow.result.tuple.element[0].tuple,
                      first_element_selected.proto.tensorflow.result.tuple)
 
-    self.assertEqual(second_element_selected.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            second_element_selected.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(second_element_selected.type_signature.result,
                      foo.type_signature.result[1])
     self.assertEqual(foo.proto.tensorflow.parameter,
@@ -292,8 +320,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(mapped_to_identity.proto.tensorflow.initialize_op,
                      foo.proto.tensorflow.initialize_op)
     foo_pruned_proto = proto_transformations.prune_tensorflow_proto(foo.proto)
-    self.assertEqual(mapped_to_identity.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            mapped_to_identity.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(mapped_to_identity.type_signature, foo.type_signature)
 
   def test_permute_graph_inputs_identity_permutation_leaves_names_alone(self):
@@ -311,8 +342,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
                      foo.proto.tensorflow.result)
     self.assertEqual(mapped_to_identity.proto.tensorflow.initialize_op,
                      foo.proto.tensorflow.initialize_op)
-    self.assertEqual(mapped_to_identity.proto.tensorflow.graph_def,
-                     foo_pruned_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            mapped_to_identity.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            foo_pruned_proto.tensorflow.graph_def))
     self.assertEqual(mapped_to_identity.type_signature, foo.type_signature)
 
   def test_permute_graph_inputs_flip_input_order_changes_only_parameters(self):
@@ -332,8 +366,11 @@ class CompiledComputationTransformsTest(common_test.TestCase,
     self.assertEqual(permuted_inputs.type_signature.result,
                      foo.type_signature.result)
     pruned_foo_proto = proto_transformations.prune_tensorflow_proto(foo.proto)
-    self.assertEqual(permuted_inputs.proto.tensorflow.graph_def,
-                     pruned_foo_proto.tensorflow.graph_def)
+    self.assertProtoEquals(
+        serialization_utils.unpack_graph_def(
+            permuted_inputs.proto.tensorflow.graph_def),
+        serialization_utils.unpack_graph_def(
+            pruned_foo_proto.tensorflow.graph_def))
     self.assertEqual(permuted_inputs.proto.tensorflow.initialize_op,
                      foo.proto.tensorflow.initialize_op)
     self.assertEqual(permuted_inputs.proto.tensorflow.result,
@@ -369,7 +406,7 @@ class CompiledComputationTransformsTest(common_test.TestCase,
       test_utils.run_tensorflow(flipped_inputs.proto, expected_result)
 
 
-class WrapParameterAsTupleTest(common_test.TestCase, parameterized.TestCase):
+class WrapParameterAsTupleTest(test.TestCase, parameterized.TestCase):
 
   def test_bind_graph_parameter_as_tuple_raises_on_none(self):
     with self.assertRaises(TypeError):
@@ -451,7 +488,7 @@ class WrapParameterAsTupleTest(common_test.TestCase, parameterized.TestCase):
     self.assertEqual(actual_result, expected_result)
 
 
-class WrapResultAsTupleTest(common_test.TestCase, parameterized.TestCase):
+class WrapResultAsTupleTest(test.TestCase, parameterized.TestCase):
 
   def test_bind_graph_result_as_tuple_raises_on_none(self):
     with self.assertRaises(TypeError):
@@ -520,7 +557,7 @@ class WrapResultAsTupleTest(common_test.TestCase, parameterized.TestCase):
     self.assertEqual(actual_result[0], expected_result)
 
 
-class GraphInputPaddingTest(common_test.TestCase, parameterized.TestCase):
+class GraphInputPaddingTest(test.TestCase, parameterized.TestCase):
 
   def test_pad_graph_inputs_to_match_type_raises_on_none(self):
     with self.assertRaisesRegex(TypeError, r'Expected.*CompiledComputation'):
@@ -634,7 +671,7 @@ class GraphInputPaddingTest(common_test.TestCase, parameterized.TestCase):
     self.assertEqual(actual_result, expected_result)
 
 
-class ConcatenateTFBlocksTest(common_test.TestCase, parameterized.TestCase):
+class ConcatenateTFBlocksTest(test.TestCase, parameterized.TestCase):
 
   def test_concatenenate_tensorflow_blocks_raises_on_none(self):
     with self.assertRaises(TypeError):
@@ -828,7 +865,7 @@ def _create_simple_selection_from_called_graph():
   return selected_result
 
 
-class SelectionFromCalledTensorFlowBlockTest(common_test.TestCase,
+class SelectionFromCalledTensorFlowBlockTest(test.TestCase,
                                              parameterized.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
@@ -909,7 +946,15 @@ def _create_simple_lambda_wrapping_graph():
   return lambda_wrap
 
 
-class LambdaWrappingGraphTest(common_test.TestCase, parameterized.TestCase):
+def _create_simple_lambda_calling_graph_with_arg_thrown_on_floor():
+  integer_identity = building_block_factory.create_compiled_identity(tf.int32)
+  x_data = building_blocks.Data('x', tf.int32)
+  called_integer_identity = building_blocks.Call(integer_identity, x_data)
+  lambda_wrap = building_blocks.Lambda('y', tf.int32, called_integer_identity)
+  return lambda_wrap
+
+
+class LambdaWrappingGraphTest(test.TestCase, parameterized.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
     pattern = _create_simple_lambda_wrapping_graph()
@@ -930,6 +975,27 @@ class LambdaWrappingGraphTest(common_test.TestCase, parameterized.TestCase):
 
   def test_leaves_type_signature_alone(self):
     pattern = _create_simple_lambda_wrapping_graph()
+    logic = compiled_computation_transforms.LambdaWrappingGraph()
+    parsed, mutated = logic.transform(pattern)
+    self.assertEqual(parsed.type_signature, pattern.type_signature)
+    self.assertTrue(mutated)
+
+  def test_should_transform_arg_thrown_on_floor(self):
+    lambda_throwing_arg_on_floor = _create_simple_lambda_calling_graph_with_arg_thrown_on_floor(
+    )
+    logic = compiled_computation_transforms.LambdaWrappingGraph()
+    self.assertTrue(logic.should_transform(lambda_throwing_arg_on_floor))
+
+  def test_transform_with_arg_thrown_on_floow_constructs_correct_root_node(
+      self):
+    pattern = _create_simple_lambda_calling_graph_with_arg_thrown_on_floor()
+    logic = compiled_computation_transforms.LambdaWrappingGraph()
+    parsed_selection, mutated = logic.transform(pattern)
+    self.assertIsInstance(parsed_selection, building_blocks.CompiledComputation)
+    self.assertTrue(mutated)
+
+  def test_leaves_type_signature_alone_arg_thrown_on_floor(self):
+    pattern = _create_simple_lambda_calling_graph_with_arg_thrown_on_floor()
     logic = compiled_computation_transforms.LambdaWrappingGraph()
     parsed, mutated = logic.transform(pattern)
     self.assertEqual(parsed.type_signature, pattern.type_signature)
@@ -964,11 +1030,11 @@ class LambdaWrappingGraphTest(common_test.TestCase, parameterized.TestCase):
 def _create_simple_tuple_of_called_graphs():
   called_const = building_block_factory.create_tensorflow_constant(
       tf.float32, 1.0)
-  tuple_of_called_graphs = building_blocks.Tuple([called_const] * 2)
+  tuple_of_called_graphs = building_blocks.Tuple([called_const, called_const])
   return tuple_of_called_graphs
 
 
-class TupleCalledGraphsTest(common_test.TestCase, parameterized.TestCase):
+class TupleCalledGraphsTest(test.TestCase, parameterized.TestCase):
 
   def test_empty_tuple(self):
     pattern = building_blocks.Tuple([])
@@ -1134,6 +1200,37 @@ class TupleCalledGraphsTest(common_test.TestCase, parameterized.TestCase):
       self.assertEqual(result[1], k**2)
     self.assertTrue(mutated)
 
+  def test_transform_results_in_fewer_ops_with_identical_args(self):
+    called_const = building_block_factory.create_tensorflow_constant(
+        tf.float32, 1.0)
+    id_applied_const = building_blocks.Call(
+        building_block_factory.create_compiled_identity(tf.float32),
+        called_const)
+    tuple_with_identical_args = building_blocks.Tuple(
+        [id_applied_const, id_applied_const])
+
+    called_float = building_block_factory.create_tensorflow_constant(
+        tf.float32, 1.0)
+    called_int = building_block_factory.create_tensorflow_constant(tf.int32, 1)
+    id_applied_float = building_blocks.Call(
+        building_block_factory.create_compiled_identity(tf.float32),
+        called_float)
+    id_applied_int = building_blocks.Call(
+        building_block_factory.create_compiled_identity(tf.int32), called_int)
+    tuple_with_distinct_args = building_blocks.Tuple(
+        [id_applied_float, id_applied_int])
+
+    tuple_parser = compiled_computation_transforms.TupleCalledGraphs()
+    identical_tuple_parsed, _ = tuple_parser.transform(
+        tuple_with_identical_args)
+    distinct_tuple_parsed, _ = tuple_parser.transform(tuple_with_distinct_args)
+    ops_under_identical_tuple = tree_analysis.count_tensorflow_ops_under(
+        identical_tuple_parsed)
+    ops_under_distinct_tuple = tree_analysis.count_tensorflow_ops_under(
+        distinct_tuple_parsed)
+
+    self.assertLess(ops_under_identical_tuple, ops_under_distinct_tuple)
+
 
 def _simulate_permutation_behavior(tuple_type, permutation):
   type_elements = anonymous_tuple.to_elements(tuple_type)
@@ -1163,7 +1260,7 @@ def _construct_permutation_tuple_collection(max_length):
   return permutation_tuples
 
 
-class RemapGraphInputsTest(common_test.TestCase, parameterized.TestCase):
+class RemapGraphInputsTest(test.TestCase, parameterized.TestCase):
 
   def test_raises_on_bad_computation(self):
     tuple_type = computation_types.to_type([tf.int32])
@@ -1311,8 +1408,7 @@ def _create_simple_lambda_call_selection_from_arg():
   return lambda_wrapping_call
 
 
-class LambdaCallSelectionFromArgTest(common_test.TestCase,
-                                     parameterized.TestCase):
+class LambdaCallSelectionFromArgTest(test.TestCase, parameterized.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
     pattern = _create_simple_lambda_call_selection_from_arg()
@@ -1423,7 +1519,7 @@ def _create_simple_lambda_call_tuple_of_selections_from_arg():
   return lambda_wrapping_call
 
 
-class LambdaToCalledTupleOfSelectionsFromArgTest(common_test.TestCase,
+class LambdaToCalledTupleOfSelectionsFromArgTest(test.TestCase,
                                                  parameterized.TestCase):
 
   def test_transform_raises_on_wrong_lengths(self):
@@ -1648,7 +1744,7 @@ class LambdaToCalledTupleOfSelectionsFromArgTest(common_test.TestCase,
     self.assertTrue(mutated)
 
 
-class ComposeTensorFlowBlocksTest(common_test.TestCase, parameterized.TestCase):
+class ComposeTensorFlowBlocksTest(test.TestCase, parameterized.TestCase):
 
   def test_raises_on_none(self):
     with self.assertRaises(TypeError):
@@ -1864,7 +1960,7 @@ def _create_simple_called_composition_of_tf_blocks():
   return one
 
 
-class CalledCompositionOfTensorFlowBlocksTest(common_test.TestCase,
+class CalledCompositionOfTensorFlowBlocksTest(test.TestCase,
                                               parameterized.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
@@ -2051,7 +2147,7 @@ def _create_simple_called_graph_on_replicated_arg(n_replicates=2):
   return called_tuple_id
 
 
-class CalledGraphOnReplicatedArgTest(common_test.TestCase):
+class CalledGraphOnReplicatedArgTest(test.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
     pattern = _create_simple_called_graph_on_replicated_arg()
@@ -2182,8 +2278,7 @@ def _create_simple_lambda_wrapping_noarg_graph():
   return lam
 
 
-class LambdaWrappingNoArgGraphTest(common_test.TestCase,
-                                   parameterized.TestCase):
+class LambdaWrappingNoArgGraphTest(test.TestCase, parameterized.TestCase):
 
   def test_should_transform_identifies_correct_pattern(self):
     pattern = _create_simple_lambda_wrapping_noarg_graph()
@@ -2208,19 +2303,27 @@ class LambdaWrappingNoArgGraphTest(common_test.TestCase,
     self.assertIsInstance(parsed, building_blocks.CompiledComputation)
 
   def test_updates_init_op(self):
-    embedded_constant = building_block_factory.create_tensorflow_constant(
-        tf.int32, 0)
-    noarg_graph = embedded_constant.function
-    tf_proto = noarg_graph.proto.tensorflow
+
+    with tf.Graph().as_default() as graph:
+      var = tf.Variable(initial_value=0.0, name='var1', import_scope='')
+      assign_op = var.assign_add(tf.constant(1.0))
+      out = tf.add(1.0, assign_op)
+      init_op_name = tf.compat.v1.global_variables_initializer().name
+
+    result_type, result_binding = tensorflow_utils.capture_result_from_graph(
+        out, graph)
+    type_spec = computation_types.FunctionType(None, result_type)
+    serialized_type_spec = type_serialization.serialize_type(type_spec)
+
     proto_with_init_op = pb.TensorFlow(
-        graph_def=tf_proto.graph_def,
-        initialize_op='bad_init_op',
-        parameter=tf_proto.parameter,
-        result=tf_proto.result)
+        graph_def=serialization_utils.pack_graph_def(graph.as_graph_def()),
+        initialize_op=init_op_name,
+        result=result_binding)
+
     constant_with_init_op = building_blocks.Call(
         building_blocks.CompiledComputation(
             pb.Computation(
-                type=noarg_graph.proto.type, tensorflow=proto_with_init_op)),
+                type=serialized_type_spec, tensorflow=proto_with_init_op)),
         None)
     lambda_wrapping_constant = building_blocks.Lambda('x', tf.float32,
                                                       constant_with_init_op)
@@ -2229,7 +2332,7 @@ class LambdaWrappingNoArgGraphTest(common_test.TestCase,
     self.assertTrue(transformed)
     split_init_op_name = parsed.proto.tensorflow.initialize_op.split('/')
     self.assertNotEmpty(split_init_op_name[0])
-    self.assertEqual(split_init_op_name[1], 'bad_init_op')
+    self.assertEqual(split_init_op_name[1], init_op_name)
 
   @parameterized.named_parameters([(str(n), n * 1.0) for n in range(10)])
   def test_function_returned_independent_of_argument(self, arg):
@@ -2242,5 +2345,217 @@ class LambdaWrappingNoArgGraphTest(common_test.TestCase,
     self.assertEqual(result, 0)
 
 
+class NestedTupleOfSelectionsAndGraphsTest(test.TestCase):
+
+  def _repack_constant_arg_as_python_structure(self, arg):
+    """Repacks the tuple of no-arg functions in a Python structure."""
+    repacked_arg = []
+    for arg_element in arg:
+      proto = arg_element.function.proto
+      materialized_value = test_utils.run_tensorflow(proto, None)
+      repacked_arg.append(materialized_value)
+    return repacked_arg
+
+  def test_should_transform_simple_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    self.assertTrue(transformer.should_transform(simple_tuple))
+
+  def test_should_transform_nested_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    outer_tuple = building_blocks.Tuple([simple_tuple])
+    self.assertTrue(transformer.should_transform(outer_tuple))
+
+  def test_creates_correct_structure_from_simple_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    transformed, _ = transformer.transform(simple_tuple)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     simple_tuple.type_signature.compact_representation())
+    self.assertIsInstance(transformed, building_blocks.Call)
+    self.assertIsInstance(transformed.function,
+                          building_blocks.CompiledComputation)
+    self.assertIsInstance(transformed.argument, building_blocks.Tuple)
+
+  def test_executes_correctly_from_simple_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    transformed, indicator = transformer.transform(simple_tuple)
+    self.assertTrue(indicator)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     simple_tuple.type_signature.compact_representation())
+    tf_proto = transformed.function.proto
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(tf_proto, arg)
+    self.assertEqual(test_result[0], 1.)
+    self.assertEqual(test_result[1], 1.)
+
+  def test_creates_correct_structure_from_nested_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    outer_tuple = building_blocks.Tuple([simple_tuple])
+    transformed, _ = transformer.transform(outer_tuple)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     outer_tuple.type_signature.compact_representation())
+    self.assertIsInstance(transformed, building_blocks.Call)
+    self.assertIsInstance(transformed.function,
+                          building_blocks.CompiledComputation)
+    self.assertIsInstance(transformed.argument, building_blocks.Tuple)
+
+  def test_executes_correctly_from_nested_tuple(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    outer_tuple = building_blocks.Tuple([simple_tuple])
+    transformed, indicator = transformer.transform(outer_tuple)
+    self.assertTrue(indicator)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     outer_tuple.type_signature.compact_representation())
+    tf_proto = transformed.function.proto
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(tf_proto, arg)
+    self.assertLen(test_result, 1)
+    self.assertLen(test_result[0], 2)
+    self.assertEqual(test_result[0][0], 1.)
+    self.assertEqual(test_result[0][1], 1.)
+
+  def test_creates_correct_structure_from_nested_tuple_with_names(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    outer_tuple = building_blocks.Tuple([
+        ('a', building_blocks.Tuple([('b', simple_tuple)]))
+    ])
+    transformed, _ = transformer.transform(outer_tuple)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     outer_tuple.type_signature.compact_representation())
+    self.assertIsInstance(transformed, building_blocks.Call)
+    self.assertIsInstance(transformed.function,
+                          building_blocks.CompiledComputation)
+    self.assertIsInstance(transformed.argument, building_blocks.Tuple)
+
+  def test_executes_correctly_from_nested_tuple_with_names(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    simple_tuple = _create_simple_tuple_of_called_graphs()
+    outer_tuple = building_blocks.Tuple([
+        ('a', building_blocks.Tuple([('b', simple_tuple)]))
+    ])
+    transformed, indicator = transformer.transform(outer_tuple)
+    self.assertTrue(indicator)
+    self.assertEqual(transformed.type_signature.compact_representation(),
+                     outer_tuple.type_signature.compact_representation())
+    tf_proto = transformed.function.proto
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(tf_proto, arg)
+    self.assertLen(test_result, 1)
+    self.assertEqual(test_result._asdict().keys(), set('a'))
+    self.assertLen(test_result.a, 1)
+    self.assertEqual(test_result.a._asdict().keys(), set('b'))
+    self.assertLen(test_result.a.b, 2)
+    self.assertEqual(test_result.a.b[0], 1.)
+    self.assertEqual(test_result.a.b[1], 1.)
+
+  def test_structure_and_type_signature_simple_selections(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    first_selection = _create_simple_selection_from_called_graph()
+    second_selection = _create_simple_selection_from_called_graph()
+    repacked_tuple = building_blocks.Tuple([first_selection, second_selection])
+    self.assertTrue(transformer.should_transform(repacked_tuple))
+    transformed, indicator = transformer.transform(repacked_tuple)
+    self.assertTrue(indicator)
+    self.assertIsInstance(transformed, building_blocks.Call)
+    self.assertIsInstance(transformed.function,
+                          building_blocks.CompiledComputation)
+    self.assertIsInstance(transformed.argument, building_blocks.Tuple)
+
+  def test_correct_execution_simple_selections(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    first_selection = _create_simple_selection_from_called_graph()
+    second_selection = _create_simple_selection_from_called_graph()
+    repacked_tuple = building_blocks.Tuple([first_selection, second_selection])
+    transformed, _ = transformer.transform(repacked_tuple)
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(transformed.function.proto, arg)
+    self.assertEqual(test_result[0], 0.)
+    self.assertEqual(test_result[1], 0.)
+
+  def test_structure_and_type_signature_nested_selections(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    embedded_zero = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32]]], 0)
+    embedded_one = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32]]], 1)
+    first_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_zero, index=0), index=0),
+        index=0)
+    second_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_one, index=0), index=0),
+        index=0)
+    repacked_tuple = building_blocks.Tuple([first_selection, second_selection])
+    self.assertTrue(transformer.should_transform(repacked_tuple))
+    transformed, indicator = transformer.transform(repacked_tuple)
+    self.assertTrue(indicator)
+    self.assertIsInstance(transformed, building_blocks.Call)
+    self.assertIsInstance(transformed.function,
+                          building_blocks.CompiledComputation)
+    self.assertIsInstance(transformed.argument, building_blocks.Tuple)
+
+  def test_correct_execution_nested_selections(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    embedded_zero = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32]]], 0)
+    embedded_one = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32]]], 1)
+    first_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_zero, index=0), index=0),
+        index=0)
+    second_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_one, index=0), index=0),
+        index=0)
+    repacked_tuple = building_blocks.Tuple([first_selection, second_selection])
+    transformed, _ = transformer.transform(repacked_tuple)
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(transformed.function.proto, arg)
+    self.assertEqual(test_result[0], 0)
+    self.assertEqual(test_result[1], 1)
+
+  def test_correct_execution_swapped_nested_selection(self):
+    transformer = compiled_computation_transforms.NestedTupleOfSelectionsAndGraphs(
+    )
+    embedded_zero = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32, tf.float32], tf.int32]], 0)
+    embedded_one = building_block_factory.create_tensorflow_constant(
+        [[[tf.int32], [tf.float32, tf.int32]]], 1)
+    first_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_zero, index=0), index=0),
+        index=1)
+    second_selection = building_blocks.Selection(
+        building_blocks.Selection(
+            building_blocks.Selection(embedded_one, index=0), index=1),
+        index=0)
+    repacked_tuple = building_blocks.Tuple([first_selection, second_selection])
+    transformed, _ = transformer.transform(repacked_tuple)
+    arg = self._repack_constant_arg_as_python_structure(transformed.argument)
+    test_result = test_utils.run_tensorflow(transformed.function.proto, arg)
+    self.assertEqual(test_result[0], 0.)
+    self.assertEqual(test_result[1], 1.)
+
+
 if __name__ == '__main__':
-  common_test.main()
+  test.main()

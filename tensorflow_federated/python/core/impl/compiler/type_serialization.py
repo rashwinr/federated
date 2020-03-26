@@ -14,10 +14,6 @@
 # limitations under the License.
 """Utilities for serializing and deserializing TFF computation_types."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow as tf
 
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
@@ -54,7 +50,7 @@ def _to_tensor_shape(tensor_type_proto):
 def serialize_type(type_spec):
   """Serializes 'type_spec' as a pb.Type.
 
-  NOTE: Currently only serialization for tensor, named tuple, sequence, and
+  Note: Currently only serialization for tensor, named tuple, sequence, and
   function types is implemented.
 
   Args:
@@ -113,7 +109,7 @@ def serialize_type(type_spec):
 def deserialize_type(type_proto):
   """Deserializes 'type_proto' as a computation_types.Type.
 
-  NOTE: Currently only deserialization for tensor, named tuple, sequence, and
+  Note: Currently only deserialization for tensor, named tuple, sequence, and
   function types is implemented.
 
   Args:

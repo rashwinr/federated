@@ -14,18 +14,12 @@
 # limitations under the License.
 """The implementation of a context to use in building federated computations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import six
-
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import context_base
-from tensorflow_federated.python.core.impl import context_stack_base
 from tensorflow_federated.python.core.impl import type_utils
 from tensorflow_federated.python.core.impl import value_impl
+from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.context_stack import context_stack_base
 
 
 class FederatedComputationContext(context_base.Context):
@@ -44,7 +38,7 @@ class FederatedComputationContext(context_base.Context):
     """
     py_typecheck.check_type(context_stack, context_stack_base.ContextStack)
     if suggested_name:
-      py_typecheck.check_type(suggested_name, six.string_types)
+      py_typecheck.check_type(suggested_name, str)
       suggested_name = str(suggested_name)
     else:
       suggested_name = 'FEDERATED'
@@ -79,17 +73,20 @@ class FederatedComputationContext(context_base.Context):
 
   def invoke(self, comp, arg):
     fn = value_impl.to_value(comp, None, self._context_stack)
-    if isinstance(fn.type_signature, computation_types.FunctionType):
-      if arg is not None:
-        type_utils.check_type(arg, fn.type_signature.parameter)
-        ret_val = fn(arg)
-      else:
-        ret_val = fn()
-      type_utils.check_type(ret_val, fn.type_signature.result)
-      return ret_val
-    elif arg is not None:
-      raise ValueError(
-          'A computation of type {} does not expect any arguments, but got an '
-          'argument {}.'.format(fn.type_signature, arg))
+    tys = fn.type_signature
+    py_typecheck.check_type(tys, computation_types.FunctionType)
+    if arg is not None:
+      if tys.parameter is None:
+        raise ValueError(
+            'A computation of type {} does not expect any arguments, but got '
+            'an argument {}.'.format(tys, arg))
+      type_utils.check_type(arg, tys.parameter)
+      ret_val = fn(arg)
     else:
-      return fn
+      if tys.parameter is not None:
+        raise ValueError(
+            'A computation of type {} expects an argument of type {}, but got '
+            ' no argument.'.format(tys, tys.parameter))
+      ret_val = fn()
+    type_utils.check_type(ret_val, tys.result)
+    return ret_val

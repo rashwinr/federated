@@ -14,13 +14,6 @@
 # limitations under the License.
 """Holds library of transformations for on compiled computations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import six
-from six.moves import range
-from six.moves import zip
 import tensorflow as tf
 
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
@@ -32,9 +25,19 @@ from tensorflow_federated.python.core.impl.compiler import building_block_factor
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import proto_transformations
 from tensorflow_federated.python.core.impl.compiler import transformation_utils
+from tensorflow_federated.python.core.impl.compiler import tree_analysis
 from tensorflow_federated.python.core.impl.compiler import type_serialization
 from tensorflow_federated.python.core.impl.utils import tensorflow_utils
 from tensorflow_federated.python.tensorflow_libs import graph_merge
+
+
+def _index_from_name(type_signature, name):
+  if name is None:
+    raise ValueError
+  source_names_list = [
+      x[0] for x in anonymous_tuple.iter_elements(type_signature)
+  ]
+  return source_names_list.index(name)
 
 
 def select_graph_output(comp, name=None, index=None):
@@ -95,16 +98,10 @@ def select_graph_output(comp, name=None, index=None):
         'with return type {}'.format(binding_oneof))
   proto_type = type_serialization.deserialize_type(proto.type)
   py_typecheck.check_type(proto_type.result, computation_types.NamedTupleType)
-  if name is None:
-    result = [x for x in graph_result_binding.tuple.element][index]
-    result_type = proto_type.result[index]
-  else:
-    type_names_list = [
-        x[0] for x in anonymous_tuple.iter_elements(proto_type.result)
-    ]
-    index = type_names_list.index(name)
-    result = [x for x in graph_result_binding.tuple.element][index]
-    result_type = proto_type.result[index]
+  if name is not None:
+    index = _index_from_name(proto_type.result, name)
+  result = graph_result_binding.tuple.element[index]
+  result_type = proto_type.result[index]
   serialized_type = type_serialization.serialize_type(
       computation_types.FunctionType(proto_type.parameter, result_type))
   selected_proto = pb.Computation(
@@ -254,7 +251,7 @@ def bind_graph_parameter_as_tuple(comp, name=None):
   """
   py_typecheck.check_type(comp, building_blocks.CompiledComputation)
   if name is not None:
-    py_typecheck.check_type(name, six.string_types)
+    py_typecheck.check_type(name, str)
   proto = comp.proto
   proto_type = type_serialization.deserialize_type(proto.type)
 
@@ -305,7 +302,7 @@ def bind_graph_result_as_tuple(comp, name=None):
   """
   py_typecheck.check_type(comp, building_blocks.CompiledComputation)
   if name is not None:
-    py_typecheck.check_type(name, six.string_types)
+    py_typecheck.check_type(name, str)
   proto = comp.proto
   proto_type = type_serialization.deserialize_type(proto.type)
 
@@ -596,6 +593,117 @@ def _construct_concatenated_type(type_list):
   return computation_types.NamedTupleType(non_none_type_list)
 
 
+def _called_graph_equality(comp1, comp2):
+  """Structural equality function for called TensorFlow graphs."""
+  if comp1 is comp2:
+    return True
+  elif type(comp1.argument) != type(comp2.argument):  # pylint: disable=unidiomatic-typecheck
+    return False
+  elif isinstance(comp1.function, building_blocks.Lambda) or isinstance(
+      comp2.function, building_blocks.Lambda):
+    return False
+  elif not tree_analysis.trees_equal(comp1.function, comp2.function):
+    return False
+  elif comp1.argument is comp2.argument:
+    return True
+  return tree_analysis.trees_equal(comp1.argument, comp2.argument)
+
+
+def construct_composed_function_capturing_selections(comp):
+  r"""Replaces Tuples of Selections of Called Graph with a single TF call.
+
+  That is, transforms the pattern:
+
+                            Tuple
+                        /   ...     \
+                     Tuple         Similar
+                      |
+                     ...
+                     Tuple
+                     ...
+                  Selection
+                     ...
+                     Call
+                    /    \
+                Graph     Comp
+
+  Into the pattern:
+
+                              Call
+                            /      \
+            Constructed graph       Constructed Tuple
+
+  The point here being that for any Tuple holding only tuples, selections and
+  called graphs (called on arbitrary arguments), this function deduplicates the
+  called graphs themselves, and represents the TFF logic embodied in the tuples
+  and selections by calling equivalent TensorFlow. Notice that this function
+  makes no effort to deduplicate the arguments to the called graphs.
+
+  Args:
+    comp: Instance of `building_blocks.Tuple` matching the first pattern above.
+
+  Returns:
+    A transformed version of `comp` matching the second pattern above.
+  """
+  deduped_called_graphs = []
+
+  def _compute_index_from_arg_and_update_graph_collection(called_graph):
+    index_from_arg = None
+    for idx, previous_called_graph in enumerate(deduped_called_graphs):
+      if _called_graph_equality(called_graph, previous_called_graph):
+        index_from_arg = idx
+    if index_from_arg is None:
+      deduped_called_graphs.append(called_graph)
+      index_from_arg = len(deduped_called_graphs) - 1
+    return index_from_arg
+
+  def _construct_selection_spec(selection_leaf):
+    """Constructs SelectionSpec from selections terminating in called graph."""
+    selection_sequence = []
+    while isinstance(selection_leaf, building_blocks.Selection):
+      index = selection_leaf.index
+      if index is None:
+        index = _index_from_name(selection_leaf.source.type_signature,
+                                 selection_leaf.name)
+      selection_sequence.append(index)
+      selection_leaf = selection_leaf.source
+
+    if not (isinstance(selection_leaf, building_blocks.Call) and isinstance(
+        selection_leaf.function, building_blocks.CompiledComputation)):
+      raise ValueError('Sequence of selections must terminate a called '
+                       '`building_blocks.CompiledComputation`; this sequence '
+                       'of selections has terminated in {} instead.'.format(
+                           selection_leaf.compact_representation()))
+    index_from_arg = _compute_index_from_arg_and_update_graph_collection(
+        selection_leaf)
+    # Need to reverse the selection maps, since we walked the tree unwrapping
+    # selections from tuples, but we will generate the TensorFlow by adding
+    # selections to tuples
+    selection_spec = building_block_factory.SelectionSpec(
+        tuple_index=index_from_arg, selection_sequence=selection_sequence[::-1])
+    return selection_spec
+
+  def _construct_output_data_spec(inner_comp):
+    """Constructs output data specification, fills `deduped_called_graphs`."""
+    if isinstance(inner_comp, building_blocks.Tuple):
+      names = (
+          x[0]
+          for x in anonymous_tuple.iter_elements(inner_comp.type_signature))
+      return anonymous_tuple.AnonymousTuple(
+          zip(names, (_construct_output_data_spec(x) for x in inner_comp)))
+    elif isinstance(inner_comp, building_blocks.Selection):
+      return _construct_selection_spec(inner_comp)
+    elif isinstance(inner_comp, building_blocks.Call):
+      return _construct_selection_spec(inner_comp)
+
+  output_data_structure = _construct_output_data_spec(comp)
+
+  arg_tuple = building_blocks.Tuple(deduped_called_graphs)
+  tf_representing_selections = building_block_factory.construct_tensorflow_selecting_and_packing_outputs(
+      arg_tuple.type_signature, output_data_structure)
+  return building_blocks.Call(tf_representing_selections, arg_tuple)
+
+
 def concatenate_tensorflow_blocks(tf_comp_list, output_name_list):
   """Concatenates inputs and outputs of its argument to a single TF block.
 
@@ -650,7 +758,7 @@ def concatenate_tensorflow_blocks(tf_comp_list, output_name_list):
                      '`None`.')
   for name in output_name_list:
     if name is not None:
-      py_typecheck.check_type(name, six.string_types)
+      py_typecheck.check_type(name, str)
   tf_proto_list = []
   for comp in tf_comp_list:
     py_typecheck.check_type(comp, building_blocks.CompiledComputation)
@@ -837,8 +945,9 @@ class LambdaWrappingNoArgGraph(transformation_utils.TransformSpec):
 
     constructed_proto = pb.Computation(
         type=serialized_function_type, tensorflow=tf_result_proto)
-
-    return building_blocks.CompiledComputation(constructed_proto), True
+    proto_pruned = proto_transformations.prune_tensorflow_proto(
+        constructed_proto)
+    return building_blocks.CompiledComputation(proto_pruned), True
 
 
 class CalledCompositionOfTensorFlowBlocks(transformation_utils.TransformSpec):
@@ -887,11 +996,10 @@ class CalledGraphOnReplicatedArg(transformation_utils.TransformSpec):
     argument = comp.argument
     if not isinstance(function, building_blocks.CompiledComputation):
       return False
-    if not (isinstance(argument, building_blocks.Tuple) and
-            all(isinstance(x, building_blocks.Reference) for x in argument)):
+    if not (isinstance(argument, building_blocks.Tuple) and len(argument) > 0):  # pylint: disable=g-explicit-length-test
       return False
-    first_ref_name = argument[0].name
-    return all(x.name == first_ref_name for x in argument)
+    first_arg = argument[0]
+    return all(tree_analysis.trees_equal(x, first_arg) for x in argument[1:])  # pylint: disable=protected-access
 
   def transform(self, comp):
     if not self.should_transform(comp):
@@ -902,9 +1010,7 @@ class CalledGraphOnReplicatedArg(transformation_utils.TransformSpec):
     logic_of_tf_comp = comp.function
     composed_tf = compose_tensorflow_blocks(
         [logic_of_tf_comp, preprocess_arg_comp])
-    single_arg = building_blocks.Reference(comp.argument[0].name,
-                                           comp.argument[0].type_signature)
-    called_tf = building_blocks.Call(composed_tf, single_arg)
+    called_tf = building_blocks.Call(composed_tf, comp.argument[0])
     return called_tf, True
 
 
@@ -943,6 +1049,23 @@ class SelectionFromCalledTensorFlowBlock(transformation_utils.TransformSpec):
     return building_blocks.Call(pruned, comp.source.argument), True
 
 
+def _contains_reference_to(comp, name):
+  """Checks that `comp` does not reference `name`."""
+  if comp is None:
+    return False
+  contains_reference = False
+
+  def _transform(inner_comp):
+    nonlocal contains_reference
+    if isinstance(inner_comp,
+                  building_blocks.Reference) and inner_comp.name == name:
+      contains_reference = True
+    return comp, False
+
+  transformation_utils.transform_postorder(comp, _transform)
+  return contains_reference
+
+
 class LambdaWrappingGraph(transformation_utils.TransformSpec):
   r"""`TransformSpec` representing a lambda wrapping a call to a TF graph.
 
@@ -952,9 +1075,13 @@ class LambdaWrappingGraph(transformation_utils.TransformSpec):
                                 |
                               Call
                              /    \
-          CompiledComputation      Ref(x)
+          CompiledComputation      Arg
 
-  Into:
+  (where Arg either is a reference to `x`, or is does not reference `x` at all)
+
+  Notice that the check that `Arg` does not reference `x` will only be complete
+  if `Arg` does not rebind `x`. At this point in the compiler pipeline, this
+  is a reasonable assumption.
 
                       CompiledComputation
 
@@ -963,11 +1090,14 @@ class LambdaWrappingGraph(transformation_utils.TransformSpec):
   """
 
   def should_transform(self, comp):
-    return (isinstance(comp, building_blocks.Lambda) and
-            isinstance(comp.result, building_blocks.Call) and isinstance(
-                comp.result.function, building_blocks.CompiledComputation) and
-            isinstance(comp.result.argument, building_blocks.Reference) and
-            comp.result.argument.name == comp.parameter_name)
+    return (
+        isinstance(comp, building_blocks.Lambda) and
+        isinstance(comp.result, building_blocks.Call) and isinstance(
+            comp.result.function, building_blocks.CompiledComputation) and
+        ((isinstance(comp.result.argument, building_blocks.Reference) and
+          comp.result.argument.name == comp.parameter_name) or
+         (not _contains_reference_to(comp.result.argument, comp.parameter_name)
+          and comp.result.function.type_signature == comp.type_signature)))
 
   def transform(self, comp):
     if not self.should_transform(comp):
@@ -982,9 +1112,9 @@ class TupleCalledGraphs(transformation_utils.TransformSpec):
 
                               Tuple--------------------
                              / ...                      \
-                         Call                          Call
-                        /    \                        /    \
-     CompiledComputation      Arg1  CompiledComputation    Argn
+                         Call                            Call
+                        /    \                          /    \
+      CompiledComputation      Arg(1)    CompiledComputation  Arg(n)
 
   Into:
 
@@ -992,16 +1122,47 @@ class TupleCalledGraphs(transformation_utils.TransformSpec):
                              /    \
           CompiledComputation      Tuple
                                   / ... \
-                                Arg1    Argn
+                              Arg(1)    Arg(n)
 
   While preserving semantics.
+
+  In addition, this transform makes the following performance claim:
+  if the arguments to these n `CompiledComputations` are identical (that is,
+  if they all pass the `tree_analysis.trees_equal` function pairwise) they
+  will be represented as a single tensor in the resulting graph, which is
+  plumbed through to the concatenated functions. That is, the structure
+  returned by this function will be more accurately represented by:
+
+                              Call
+                             /    \
+          CompiledComputation      Arg
+
+  where `tree_analysis.trees_equal(Arg, Arg(i))` is `True` for all `i`.
+
+  In particular this implies that, although `TupleCalledGraphs` will not check
+  to see if the functions it is passed are identical, calling
+  `TupleCalledGraphs.transform` on distinct called graphs with identical
+  arguments will not introduce any unwarranted duplication.
   """
 
+  def __init__(self, only_equal_args=False):
+    self._only_equal_args = only_equal_args
+
   def should_transform(self, comp):
-    return (isinstance(comp, building_blocks.Tuple) and
+    if not (isinstance(comp, building_blocks.Tuple) and
             all(isinstance(x, building_blocks.Call) for x in comp) and all(
                 isinstance(x.function, building_blocks.CompiledComputation)
-                for x in comp))
+                for x in comp)):
+      return False
+    if not self._only_equal_args:
+      return True
+    else:
+      if len(comp) == 0:  # pylint: disable=g-explicit-length-test
+        return False
+      arg_generator = (x.argument for x in comp)
+      first_arg = next(arg_generator)
+      return all(
+          tree_analysis.trees_equal(x, first_arg) for x in arg_generator)
 
   def transform(self, comp):
     if not self.should_transform(comp):
@@ -1317,3 +1478,59 @@ class LambdaToCalledTupleOfSelectionsFromArg(transformation_utils.TransformSpec
     pruned = building_blocks.CompiledComputation(
         proto_transformations.prune_tensorflow_proto(inputs_mapped.proto))
     return pruned, True
+
+
+class NestedTupleOfSelectionsAndGraphs(transformation_utils.TransformSpec):
+  r"""Handles Tuples of Graphs, Tuples and Selections without duplication.
+
+  The amount of duplication is controlled by how much is identified as being
+  equal by `_called_graph_equality`, a private module-level function here.
+  IE, two called graphs will both exist in the resulting structure if and
+  only if they do *not* compare to equal under `_called_graph_equality`.
+
+  Notice that we should never encounter Selections from Tuples here, by
+  preprocessing before passing to TensorFlow code generations.
+
+  Transforms the pattern:
+
+                            Tuple
+                        /   ...     \
+                     Tuple         Similar
+                      |
+                     ...
+                     Tuple
+                     ...
+                  Selection
+                     ...
+                     Call
+                    /    \
+                Graph     Comp
+
+  Into the pattern:
+
+                              Call
+                            /      \
+            Constructed graph       Constructed Tuple
+  """
+
+  def _should_transform_helper(self, comp):
+    if isinstance(comp, building_blocks.Tuple):
+      return all(self._should_transform_helper(x) for x in comp)
+    elif isinstance(comp, building_blocks.Selection):
+      return not isinstance(
+          comp.source, building_blocks.Tuple) and self._should_transform_helper(
+              comp.source)
+    elif (isinstance(comp, building_blocks.Call) and
+          isinstance(comp.function, building_blocks.CompiledComputation)):
+      return True
+    return False
+
+  def should_transform(self, comp):
+    if not isinstance(comp, building_blocks.Tuple):
+      return False
+    return self._should_transform_helper(comp)
+
+  def transform(self, comp):
+    if not self.should_transform(comp):
+      return comp, False
+    return construct_composed_function_capturing_selections(comp), True

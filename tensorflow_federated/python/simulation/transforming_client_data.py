@@ -14,14 +14,8 @@
 # limitations under the License.
 """Expands ClientData by performing transformations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import bisect
 import re
-
-from six.moves import range
 
 import tensorflow as tf
 

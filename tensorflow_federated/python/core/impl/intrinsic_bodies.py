@@ -14,25 +14,20 @@
 # limitations under the License.
 """Bodies of intrinsics to be added as replacements by the compiler pipleine."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 
-from six.moves import range
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import anonymous_tuple
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import context_stack_base
 from tensorflow_federated.python.core.impl import intrinsic_factory
 from tensorflow_federated.python.core.impl import type_utils
 from tensorflow_federated.python.core.impl import value_impl
 from tensorflow_federated.python.core.impl.compiler import building_block_factory
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
+from tensorflow_federated.python.core.impl.context_stack import context_stack_base
 
 
 def get_intrinsic_bodies(context_stack):
@@ -276,7 +271,7 @@ def get_intrinsic_bodies(context_stack):
   #     GENERIC_MAP(GENERIC_DIVIDE, GENERIC_SUM(
   #       GENERIC_MAP(GENERIC_MULTIPLY, GENERIC_ZIP(x, w)), p))
   #
-  #     NOTE: The above formula does not account for type casting issues that
+  #     Note: The above formula does not account for type casting issues that
   #     arise due to the interplay betwen the types of values and weights and
   #     how they relate to types of products and ratios, and either the formula
   #     or the type signatures may need to be tweaked.

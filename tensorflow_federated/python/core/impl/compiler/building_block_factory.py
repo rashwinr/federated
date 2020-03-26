@@ -14,15 +14,10 @@
 # limitations under the License.
 """Library implementing reusable `computation_building_blocks` structures."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import random
 import string
+from typing import Sequence
 
-import six
-from six.moves import range
 import tensorflow as tf
 
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
@@ -105,11 +100,7 @@ def create_compiled_identity(type_signature, name=None):
   """
   type_spec = computation_types.to_type(type_signature)
   py_typecheck.check_type(type_spec, computation_types.Type)
-  if not type_utils.is_tensorflow_compatible_type(type_spec):
-    raise TypeError(
-        'Can only construct a TF block with types which only contain tensor, '
-        'sequence or tuple types; you have tried to construct a TF block with '
-        'parameter of type {}'.format(type_spec))
+  type_utils.check_tensorflow_compatible_type(type_spec)
   with tf.Graph().as_default() as graph:
     parameter_value, parameter_binding = tensorflow_utils.stamp_parameter_in_graph(
         'x', type_spec, graph)
@@ -126,7 +117,129 @@ def create_compiled_identity(type_signature, name=None):
   return building_blocks.CompiledComputation(proto, name)
 
 
-def create_tensorflow_constant(type_spec, scalar_value):
+class SelectionSpec(object):
+  """Data class representing map from input tuple to selection of result.
+
+  Attributes:
+    tuple_index: The index of the source of the selection sequence in the
+      desired result of the generated TensorFlow. If this `SelectionSpec`
+      appears at index i of a list of `SelectionSpec`s, index j is the source
+      for the result of the generated function at index i.
+    selection_sequence: A list or tuple representing the selections to make from
+      `tuple_index`, so that the list `[0]` for example would represent the
+      output is the 0th element of `tuple_index`, while `[0, 0]` would represent
+      that the output is the 0th element of the 0th element of `tuple_index`.
+  """
+
+  def __init__(self, tuple_index: int, selection_sequence: Sequence[int]):
+    self._tuple_index = tuple_index
+    self._selection_sequence = selection_sequence
+
+  @property
+  def tuple_index(self):
+    return self._tuple_index
+
+  @property
+  def selection_sequence(self):
+    return self._selection_sequence
+
+  def __str__(self):
+    return 'SelectionSequence(tuple_index={},selection_sequence={}'.format(
+        self._tuple_index, self._selection_sequence)
+
+  def __repr__(self):
+    return str(self)
+
+
+def _extract_selections(parameter_value, output_spec):
+  results = []
+  for selection_spec in output_spec:
+    result_element = parameter_value[selection_spec.tuple_index]
+    for selection in selection_spec.selection_sequence:
+      py_typecheck.check_type(selection, int)
+      result_element = result_element[selection]
+    results.append(result_element)
+  return results
+
+
+def construct_tensorflow_selecting_and_packing_outputs(
+    arg_type, output_structure: anonymous_tuple.AnonymousTuple):
+  """Constructs TensorFlow selecting and packing elements from its input.
+
+  The result of this function can be called on a deduplicated
+  `building_blocks.Tuple` containing called graphs, thus preventing us from
+  embedding the same TensorFlow computation in the generated graphs, and
+  reducing the amount of work duplicated in the process of generating
+  TensorFlow.
+
+  The TensorFlow which results here will be a function which takes an argument
+  of type `arg_type`, returning a result specified by `output_structure`. Each
+  `SelectionSpec` nested inside of `output_structure` will represent a selection
+  from one of the arguments of the tuple `arg_type`, with the empty selection
+  being a possibility. The nested structure of `output_structure` will determine
+  how these selections are packed back into a result, IE, the result of the
+  function will be a nested tuple with the same structure as `output_structure`,
+  where the leaves of this structure (the `SelectionSpecs` of
+  `output_structure`) will be selections from the argument.
+
+  Args:
+    arg_type: `computation_types.Type` of the argument on which the constructed
+      function will be called. Should be an instance of
+      `computation_types.NamedTupleType`.
+    output_structure: `anonymous_tuple.AnonymousTuple` with `SelectionSpec`
+      or `anonymous_tupl.AnonymousTupl` elements, mapping from elements of
+      the nested argument tuple to the desired result of the generated
+      computation. `output_structure` must contain all the names desired on
+      the output of the computation.
+
+  Returns:
+    A `building_blocks.CompiledComputation` representing the specification
+    above.
+
+  Raises:
+    TypeError: If `arg_type` is not a `computation_types.NamedTupleType`, or
+      represents a type which cannot act as an input or output to a TensorFlow
+      computation in TFF, IE does not contain exclusively
+      `computation_types.SequenceType`, `computation_types.NamedTupleType` or
+      `computation_types.TensorType`.
+  """
+  py_typecheck.check_type(output_structure, anonymous_tuple.AnonymousTuple)
+
+  def _check_output_structure(elem):
+    if isinstance(elem, anonymous_tuple.AnonymousTuple):
+      for x in elem:
+        _check_output_structure(x)
+    elif not isinstance(elem, SelectionSpec):
+      raise TypeError('output_structure can only contain nested anonymous '
+                      'tuples and `SelectionSpecs`; encountered the value {} '
+                      'of type {}.'.format(elem, type(elem)))
+
+  _check_output_structure(output_structure)
+  output_spec = anonymous_tuple.flatten(output_structure)
+  type_spec = computation_types.to_type(arg_type)
+  py_typecheck.check_type(type_spec, computation_types.NamedTupleType)
+  type_utils.check_tensorflow_compatible_type(type_spec)
+  with tf.Graph().as_default() as graph:
+    parameter_value, parameter_binding = tensorflow_utils.stamp_parameter_in_graph(
+        'x', type_spec, graph)
+  results = _extract_selections(parameter_value, output_spec)
+
+  repacked_result = anonymous_tuple.pack_sequence_as(output_structure, results)
+  result_type, result_binding = tensorflow_utils.capture_result_from_graph(
+      repacked_result, graph)
+
+  function_type = computation_types.FunctionType(type_spec, result_type)
+  serialized_function_type = type_serialization.serialize_type(function_type)
+  proto = pb.Computation(
+      type=serialized_function_type,
+      tensorflow=pb.TensorFlow(
+          graph_def=serialization_utils.pack_graph_def(graph.as_graph_def()),
+          parameter=parameter_binding,
+          result=result_binding))
+  return building_blocks.CompiledComputation(proto)
+
+
+def create_tensorflow_constant(type_spec, scalar_value, name=None):
   """Creates called graph returning constant `scalar_value` of type `type_spec`.
 
   `scalar_value` must be a scalar, and cannot be a float if any of the tensor
@@ -138,6 +251,7 @@ def create_tensorflow_constant(type_spec, scalar_value):
       `computation_types.to_type`, and whose resulting type tree can only
       contain named tuples and tensors.
     scalar_value: Scalar value to place in all the tensor leaves of `type_spec`.
+    name: An optional string name to use as the name of the computation.
 
   Returns:
     An instance of `building_blocks.Call`, whose argument is `None`
@@ -205,7 +319,7 @@ def create_tensorflow_constant(type_spec, scalar_value):
           parameter=None,
           result=result_binding))
 
-  noarg_constant_fn = building_blocks.CompiledComputation(proto)
+  noarg_constant_fn = building_blocks.CompiledComputation(proto, name)
   return building_blocks.Call(noarg_constant_fn, None)
 
 
@@ -230,11 +344,7 @@ def create_compiled_input_replication(type_signature, n_replicas):
   """
   type_spec = computation_types.to_type(type_signature)
   py_typecheck.check_type(type_spec, computation_types.Type)
-  if not type_utils.is_tensorflow_compatible_type(type_spec):
-    raise TypeError(
-        'Can only construct a TF block with types which only contain tensor, '
-        'sequence or tuple types; you have tried to construct a TF block with '
-        'parameter of type {}'.format(type_spec))
+  type_utils.check_tensorflow_compatible_type(type_spec)
   py_typecheck.check_type(n_replicas, int)
   with tf.Graph().as_default() as graph:
     parameter_value, parameter_binding = tensorflow_utils.stamp_parameter_in_graph(
@@ -434,7 +544,7 @@ def create_federated_getattr_call(arg, name):
     as defined by `name`.
   """
   py_typecheck.check_type(arg, building_blocks.ComputationBuildingBlock)
-  py_typecheck.check_type(name, six.string_types)
+  py_typecheck.check_type(name, str)
   py_typecheck.check_type(arg.type_signature, computation_types.FederatedType)
   py_typecheck.check_type(arg.type_signature.member,
                           computation_types.NamedTupleType)
@@ -470,7 +580,7 @@ def create_federated_setattr_call(federated_comp, name, value_comp):
   """
   py_typecheck.check_type(federated_comp,
                           building_blocks.ComputationBuildingBlock)
-  py_typecheck.check_type(name, six.string_types)
+  py_typecheck.check_type(name, str)
   py_typecheck.check_type(value_comp, building_blocks.ComputationBuildingBlock)
   py_typecheck.check_type(federated_comp.type_signature,
                           computation_types.FederatedType)
@@ -514,7 +624,7 @@ def create_named_tuple_setattr_lambda(named_tuple_signature, name, value_comp):
   """
   py_typecheck.check_type(named_tuple_signature,
                           computation_types.NamedTupleType)
-  py_typecheck.check_type(name, six.string_types)
+  py_typecheck.check_type(name, str)
   py_typecheck.check_type(value_comp, building_blocks.ComputationBuildingBlock)
   value_comp_placeholder = building_blocks.Reference('value_comp_placeholder',
                                                      value_comp.type_signature)
@@ -565,7 +675,7 @@ def create_federated_getattr_comp(comp, name):
   py_typecheck.check_type(comp.type_signature, computation_types.FederatedType)
   py_typecheck.check_type(comp.type_signature.member,
                           computation_types.NamedTupleType)
-  py_typecheck.check_type(name, six.string_types)
+  py_typecheck.check_type(name, str)
   element_names = [
       x for x, _ in anonymous_tuple.iter_elements(comp.type_signature.member)
   ]
@@ -807,6 +917,44 @@ def create_federated_collect(value):
   return building_blocks.Call(intrinsic, value)
 
 
+def create_federated_eval(
+    fn: building_blocks.ComputationBuildingBlock,
+    placement: placement_literals.PlacementLiteral,
+) -> building_blocks.ComputationBuildingBlock:
+  r"""Creates a called federated eval.
+
+            Call
+           /    \
+  Intrinsic      Comp
+
+  Args:
+    fn: A `building_blocks.ComputationBuildingBlock` to use as the function.
+    placement: A `placement_literals.PlacementLiteral` to use as the placement.
+
+  Returns:
+    A `building_blocks.Call`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+  """
+  py_typecheck.check_type(fn, building_blocks.ComputationBuildingBlock)
+  py_typecheck.check_type(fn.type_signature, computation_types.FunctionType)
+  if placement is placement_literals.CLIENTS:
+    uri = intrinsic_defs.FEDERATED_EVAL_AT_CLIENTS.uri
+    all_equal = False
+  elif placement is placement_literals.SERVER:
+    uri = intrinsic_defs.FEDERATED_EVAL_AT_SERVER.uri
+    all_equal = True
+  else:
+    raise TypeError('Unsupported placement {}.'.format(placement))
+  result_type = computation_types.FederatedType(
+      fn.type_signature.result, placement, all_equal=all_equal)
+  intrinsic_type = computation_types.FunctionType(fn.type_signature,
+                                                  result_type)
+  intrinsic = building_blocks.Intrinsic(uri, intrinsic_type)
+  return building_blocks.Call(intrinsic, fn)
+
+
 def create_federated_map(fn, arg):
   r"""Creates a called federated map.
 
@@ -849,7 +997,7 @@ def create_federated_map_all_equal(fn, arg):
                  |
                  [Comp, Comp]
 
-  NOTE: The `fn` is required to be deterministic and therefore should contain no
+  Note: The `fn` is required to be deterministic and therefore should contain no
   `building_blocks.CompiledComputations`.
 
   Args:
@@ -984,6 +1132,38 @@ def create_federated_reduce(value, zero, op):
   intrinsic = building_blocks.Intrinsic(intrinsic_defs.FEDERATED_REDUCE.uri,
                                         intrinsic_type)
   values = building_blocks.Tuple((value, zero, op))
+  return building_blocks.Call(intrinsic, values)
+
+
+def create_federated_secure_sum(value, bitwidth):
+  r"""Creates a called secure sum.
+
+            Call
+           /    \
+  Intrinsic      [Comp, Comp]
+
+  Args:
+    value: A `building_blocks.ComputationBuildingBlock` to use as the value.
+    bitwidth: A `building_blocks.ComputationBuildingBlock` to use as the
+      bitwidth value.
+
+  Returns:
+    A `building_blocks.Call`.
+
+  Raises:
+    TypeError: If any of the types do not match.
+  """
+  py_typecheck.check_type(value, building_blocks.ComputationBuildingBlock)
+  py_typecheck.check_type(bitwidth, building_blocks.ComputationBuildingBlock)
+  result_type = computation_types.FederatedType(value.type_signature.member,
+                                                placement_literals.SERVER)
+  intrinsic_type = computation_types.FunctionType([
+      type_utils.to_non_all_equal(value.type_signature),
+      bitwidth.type_signature,
+  ], result_type)
+  intrinsic = building_blocks.Intrinsic(intrinsic_defs.FEDERATED_SECURE_SUM.uri,
+                                        intrinsic_type)
+  values = building_blocks.Tuple([value, bitwidth])
   return building_blocks.Call(intrinsic, values)
 
 
@@ -1195,9 +1375,10 @@ def create_federated_zip(value):
         inner_selection = building_blocks.Selection(nested, index=i)
         _make_nested_selections(inner_selection)
     else:
-      raise TypeError('Only type signatures consisting of structures of '
-                      'NamedTupleType bottoming out in FederatedType can be '
-                      'used in federated_zip.')
+      raise TypeError(
+          'Expected type signatures consisting of structures of NamedTupleType '
+          'bottoming out in FederatedType, found: \n{}'.format(
+              nested.type_signature))
 
   _make_nested_selections(value)
 
@@ -1333,7 +1514,7 @@ def _create_chain_zipped_values(value):
                                                 \             \
                                                  Ref(value)    Ref(value)
 
-  NOTE: This function is intended to be used in conjunction with
+  Note: This function is intended to be used in conjunction with
   `_create_fn_to_append_chain_zipped_values` and will drop the tuple names. The
   names will be added back to the resulting computation when the zipped values
   are mapped to a function that flattens the chain. This nested zip -> flatten
@@ -1651,8 +1832,7 @@ def create_named_federated_tuple(tuple_to_name, names_to_add):
     TypeError: If the types do not match the description above.
   """
   py_typecheck.check_type(names_to_add, (list, tuple))
-  element_types_to_accept = six.string_types + (type(None),)
-  if not all(isinstance(x, element_types_to_accept) for x in names_to_add):
+  if not all((x is None or isinstance(x, str)) for x in names_to_add):
     raise TypeError('`names_to_add` must contain only instances of `str` or '
                     'NoneType; you have passed in {}'.format(names_to_add))
   py_typecheck.check_type(tuple_to_name,
@@ -1683,7 +1863,7 @@ def create_named_tuple(comp, names):
     TypeError: If the types do not match.
   """
   py_typecheck.check_type(names, (list, tuple))
-  if not all(isinstance(x, (six.string_types, type(None))) for x in names):
+  if not all(isinstance(x, (str, type(None))) for x in names):
     raise TypeError('Expected `names` containing only instances of `str` or '
                     '`None`, found {}'.format(names))
   py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
@@ -1733,7 +1913,7 @@ def create_zip(comp):
           'length, found: {}'.format(comp.type_signature))
   if not isinstance(comp, building_blocks.Reference):
     name_generator = unique_name_generator(comp)
-    name = six.next(name_generator)
+    name = next(name_generator)
     ref = building_blocks.Reference(name, comp.type_signature)
   else:
     ref = comp

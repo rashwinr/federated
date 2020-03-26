@@ -14,10 +14,6 @@
 # limitations under the License.
 """Test utils for TFF computations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 import tensorflow as tf
 
@@ -103,7 +99,8 @@ def create_dummy_called_intrinsic(parameter_name, parameter_type=tf.int32):
 
 def create_dummy_called_federated_aggregate(accumulate_parameter_name,
                                             merge_parameter_name,
-                                            report_parameter_name):
+                                            report_parameter_name,
+                                            value_type=tf.int32):
   r"""Returns a dummy called federated aggregate.
 
                       Call
@@ -118,11 +115,14 @@ def create_dummy_called_federated_aggregate(accumulate_parameter_name,
     accumulate_parameter_name: The name of the accumulate parameter.
     merge_parameter_name: The name of the merge parameter.
     report_parameter_name: The name of the report parameter.
+    value_type: The TFF type of the value to be aggregated, placed at
+      CLIENTS.
   """
-  value_type = computation_types.FederatedType(tf.int32, placements.CLIENTS)
-  value = building_blocks.Data('data', value_type)
+  federated_value_type = computation_types.FederatedType(
+      value_type, placements.CLIENTS)
+  value = building_blocks.Data('data', federated_value_type)
   zero = building_blocks.Data('data', tf.float32)
-  accumulate_type = computation_types.NamedTupleType((tf.float32, tf.int32))
+  accumulate_type = computation_types.NamedTupleType((tf.float32, value_type))
   accumulate_result = building_blocks.Data('data', tf.float32)
   accumulate = building_blocks.Lambda(accumulate_parameter_name,
                                       accumulate_type, accumulate_result)
@@ -161,9 +161,9 @@ def create_dummy_called_federated_apply(parameter_name,
 def create_dummy_called_federated_broadcast(value_type=tf.int32):
   r"""Returns a dummy called federated broadcast.
 
-                Call
-               /    \
-  federated_map      data
+                      Call
+                     /    \
+  federated_broadcast      data
 
   Args:
     value_type: The type of the value.
@@ -216,6 +216,39 @@ def create_dummy_called_federated_map_all_equal(parameter_name,
       parameter_type, placements.CLIENTS, all_equal=True)
   arg = building_blocks.Data('data', arg_type)
   return building_block_factory.create_federated_map_all_equal(fn, arg)
+
+
+def create_dummy_called_federated_secure_sum(value_type=tf.int32):
+  r"""Returns a dummy called secure sum.
+
+                       Call
+                      /    \
+  federated_secure_sum      [data, data]
+
+  Args:
+    value_type: The type of the value.
+  """
+  federated_type = computation_types.FederatedType(value_type,
+                                                   placements.CLIENTS)
+  value = building_blocks.Data('data', federated_type)
+  bitwidth = building_blocks.Data('data', value_type)
+  return building_block_factory.create_federated_secure_sum(value, bitwidth)
+
+
+def create_dummy_called_federated_sum(value_type=tf.int32):
+  r"""Returns a dummy called federated sum.
+
+                Call
+               /    \
+  federated_sum      data
+
+  Args:
+    value_type: The type of the value.
+  """
+  federated_type = computation_types.FederatedType(value_type,
+                                                   placements.CLIENTS)
+  value = building_blocks.Data('data', federated_type)
+  return building_block_factory.create_federated_sum(value)
 
 
 def create_dummy_called_sequence_map(parameter_name, parameter_type=tf.int32):
@@ -337,6 +370,7 @@ def create_nested_syntax_tree():
     ['t'=Data('c')]    Data('d') ['u'=Data('e')]  Data('f')
 
 
+  Postorder traversals:
   If we are reading Data URIs, results of a postorder traversal should be:
   [a, b, c, d, e, f, g, h, i, j, k]
 
@@ -347,6 +381,18 @@ def create_nested_syntax_tree():
   And if we are reading both in an interleaved fashion, results of a postorder
   traversal should be:
   [a, b, c, d, t, e, f, u, g, v, h, i, j, w, x, y, z, k]
+
+  Preorder traversals:
+  If we are reading Data URIs, results of a preorder traversal should be:
+  [a, b, c, d, e, f, g, h, i, j, k]
+
+  If we are reading locals declarations, results of a preorder traversal should
+  be:
+  [y, z, v, t, u, x, w]
+
+  And if we are reading both in an interleaved fashion, results of a preorder
+  traversal should be:
+  [y, z, a, b, v, t, c, d, u, e, f, g, x, h, w, i, j, k]
 
   Since we are also exposing the ability to hook into variable declarations,
   it is worthwhile considering the order in which variables are assigned in

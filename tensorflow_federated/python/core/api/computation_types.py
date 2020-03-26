@@ -14,16 +14,11 @@
 # limitations under the License.
 """Defines functions and classes for building and manipulating TFF types."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
 import collections
 from typing import Any
 
 import attr
-import six
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import anonymous_tuple
@@ -32,8 +27,7 @@ from tensorflow_federated.python.core.impl.compiler import placement_literals
 from tensorflow_federated.python.tensorflow_libs import tensor_utils
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Type(object):
+class Type(object, metaclass=abc.ABCMeta):
   """An abstract interface for all classes that represent TFF types."""
 
   def compact_representation(self):
@@ -143,20 +137,19 @@ class NamedTupleType(anonymous_tuple.AnonymousTuple, Type):
     """Constructs a new instance from the given element types.
 
     Args:
-      elements: Element specifications, in the format of a `list`, `tuple`, or
-        `collections.OrderedDict`. Each element specification is either a type
-        spec (an instance of `tff.Type` or something convertible to it via
-        `tff.to_type`) for the element, or a (name, spec) for elements that have
-        defined names. Alternatively, one can supply here an instance of
-        `collections.OrderedDict` mapping element names to their types (or
-        things that are convertible to types).
+      elements: An iterable of element specifications. Each element
+        specification is either a type spec (an instance of `tff.Type` or
+        something convertible to it via `tff.to_type`) for the element, or a
+        (name, spec) for elements that have defined names. Alternatively, one
+        can supply here an instance of `collections.OrderedDict` mapping element
+        names to their types (or things that are convertible to types).
     """
-    py_typecheck.check_type(elements, (list, tuple, collections.OrderedDict))
+    py_typecheck.check_type(elements, collections.Iterable)
     if py_typecheck.is_named_tuple(elements):
       elements = elements  # type: Any
       elements = elements._asdict()
     if isinstance(elements, collections.OrderedDict):
-      elements = list(elements.items())
+      elements = elements.items()
 
     def _is_full_element_spec(e):
       return py_typecheck.is_name_value_pair(e, name_required=False)
@@ -172,7 +165,7 @@ class NamedTupleType(anonymous_tuple.AnonymousTuple, Type):
     if _is_full_element_spec(elements):
       elements = [(elements[0], to_type(elements[1]))]
     else:
-      elements = [_map_element(e) for e in elements]
+      elements = (_map_element(e) for e in elements)
 
     anonymous_tuple.AnonymousTuple.__init__(self, elements)
 
@@ -188,8 +181,7 @@ class NamedTupleType(anonymous_tuple.AnonymousTuple, Type):
         _element_repr(e) for e in anonymous_tuple.iter_elements(self)))
 
   def __eq__(self, other):
-    return (isinstance(other, NamedTupleType) and
-            super(NamedTupleType, self).__eq__(other))
+    return isinstance(other, NamedTupleType) and super().__eq__(other)
 
 
 # While this lives in the `api` diretory, `NamedTupleTypeWithPyContainerType` is
@@ -220,7 +212,7 @@ class SequenceType(Type):
     self._element = to_type(element)
 
   @property
-  def element(self):
+  def element(self) -> Type:
     return self._element
 
   def __repr__(self):
@@ -272,7 +264,7 @@ class AbstractType(Type):
       label: A string label of an abstract type. All occurences of the label
         within a computation's type signature refer to the same concrete type.
     """
-    py_typecheck.check_type(label, six.string_types)
+    py_typecheck.check_type(label, str)
     self._label = str(label)
 
   @property
@@ -361,7 +353,7 @@ class FederatedType(Type):
             self._all_equal == other.all_equal)
 
 
-def to_type(spec):
+def to_type(spec) -> Type:
   """Converts the argument into an instance of `tff.Type`.
 
   Examples of arguments convertible to tensor types:
@@ -439,7 +431,7 @@ def to_type(spec):
             py_typecheck.type_string(type(spec))))
 
 
-def _to_type_from_attrs(spec):
+def _to_type_from_attrs(spec) -> Type:
   """Converts an `attr.s` class or instance to a `tff.Type`."""
   if isinstance(spec, type):
     # attrs class type, introspect the attributes for their type annotations.
@@ -461,7 +453,7 @@ def _to_type_from_attrs(spec):
   return NamedTupleTypeWithPyContainerType(elements, the_type)
 
 
-def _string_representation(type_spec, formatted):
+def _string_representation(type_spec, formatted: bool) -> str:
   """Returns the string representation of a TFF `Type`.
 
   This function creates a `list` of strings representing the given `type_spec`;
@@ -563,6 +555,8 @@ def _string_representation(type_spec, formatted):
       result_lines = _lines_for_type(type_spec.result, formatted)
       return _combine([['('], parameter_lines, [' -> '], result_lines, [')']])
     elif isinstance(type_spec, NamedTupleType):
+      if len(type_spec) == 0:  # pylint: disable=g-explicit-length-test
+        return ['<>']
       elements = anonymous_tuple.to_elements(type_spec)
       elements_lines = _lines_for_named_types(elements, formatted)
       if formatted:

@@ -18,21 +18,31 @@ import collections
 import tensorflow as tf
 import tensorflow_privacy
 
+from tensorflow_federated.python.common_libs import anonymous_tuple
 from tensorflow_federated.python.common_libs import test
-from tensorflow_federated.python.core import api as tff
-from tensorflow_federated.python.core import framework as tff_framework
+from tensorflow_federated.python.core.api import computation_types
+from tensorflow_federated.python.core.api import computations
+from tensorflow_federated.python.core.api import intrinsics
+from tensorflow_federated.python.core.impl import type_utils
+from tensorflow_federated.python.core.impl.compiler import placement_literals
+from tensorflow_federated.python.core.impl.executors import default_executor
 from tensorflow_federated.python.core.utils import differential_privacy
+
+tf.compat.v1.enable_v2_behavior()
 
 
 def wrap_aggregate_fn(dp_aggregate_fn, sample_value):
-  tff_types = tff_framework.type_from_tensors(sample_value)
+  tff_types = type_utils.type_from_tensors(sample_value)
 
-  @tff.federated_computation
+  @computations.federated_computation
   def run_initialize():
-    return tff.federated_value(dp_aggregate_fn.initialize(), tff.SERVER)
+    return intrinsics.federated_value(dp_aggregate_fn.initialize(),
+                                      placement_literals.SERVER)
 
-  @tff.federated_computation(run_initialize.type_signature.result,
-                             tff.FederatedType(tff_types, tff.CLIENTS))
+  @computations.federated_computation(run_initialize.type_signature.result,
+                                      computation_types.FederatedType(
+                                          tff_types,
+                                          placement_literals.CLIENTS))
   def run_aggregate(global_state, client_values):
     return dp_aggregate_fn(global_state, client_values)
 
@@ -100,7 +110,7 @@ class DpUtilsTest(test.TestCase):
     model = mock_model(mock_weights(vectors))
 
     query = differential_privacy.build_dp_query(
-        1.0, 2.0, 3.0, use_per_vector=True, model=model)
+        1.0, 2.0, 3.0, per_vector_clipping=True, model=model)
 
     self.assertIsInstance(query, tensorflow_privacy.NestedQuery)
 
@@ -128,8 +138,8 @@ class DpUtilsTest(test.TestCase):
 
     global_state, result = aggregate(global_state, [1.0, 3.0, 5.0])
 
-    self.assertEqual(getattr(global_state, 'l2_norm_clip'), 4.0)
-    self.assertEqual(getattr(global_state, 'stddev'), 0.0)
+    self.assertEqual(global_state['l2_norm_clip'], 4.0)
+    self.assertEqual(global_state['stddev'], 0.0)
     self.assertEqual(result, 8.0)
 
   def test_dp_sum_structure_odict(self):
@@ -151,26 +161,29 @@ class DpUtilsTest(test.TestCase):
 
     global_state, result = aggregate(global_state, data)
 
-    self.assertEqual(getattr(global_state, 'l2_norm_clip'), 5.0)
-    self.assertEqual(getattr(global_state, 'stddev'), 0.0)
+    self.assertEqual(global_state['l2_norm_clip'], 5.0)
+    self.assertEqual(global_state['stddev'], 0.0)
 
-    self.assertEqual(getattr(result, 'a')[0], 6.0)
-    self.assertEqual(getattr(result, 'b')[0], 9.0)
+    self.assertEqual(result['a'][0], 6.0)
+    self.assertEqual(result['b'][0], 9.0)
 
   def test_dp_sum_structure_list(self):
     query = tensorflow_privacy.GaussianSumQuery(5.0, 0.0)
 
     def _value_type_fn(value):
       del value
-      return [tff.TensorType(tf.float32), tff.TensorType(tf.float32)]
+      return [
+          computation_types.TensorType(tf.float32),
+          computation_types.TensorType(tf.float32),
+      ]
 
-    def _from_anon_tuple_fn(record):
+    def _from_tff_result_fn(record):
       return list(record)
 
     dp_aggregate_fn, _ = differential_privacy.build_dp_aggregate(
         query,
         value_type_fn=_value_type_fn,
-        from_anon_tuple_fn=_from_anon_tuple_fn)
+        from_tff_result_fn=_from_tff_result_fn)
 
     def datapoint(a, b):
       return [tf.Variable(a, name='a'), tf.Variable(b, name='b')]
@@ -186,8 +199,8 @@ class DpUtilsTest(test.TestCase):
 
     global_state, result = aggregate(global_state, data)
 
-    self.assertEqual(getattr(global_state, 'l2_norm_clip'), 5.0)
-    self.assertEqual(getattr(global_state, 'stddev'), 0.0)
+    self.assertEqual(global_state['l2_norm_clip'], 5.0)
+    self.assertEqual(global_state['stddev'], 0.0)
 
     result = list(result)
     self.assertEqual(result[0], 6.0)
@@ -214,12 +227,11 @@ class DpUtilsTest(test.TestCase):
 
     def run_and_check(global_state, expected_l2_norm_clip, expected_result):
       global_state, result = aggregate(global_state, records)
-      self.assertEqual(
-          getattr(global_state, 'l2_norm_clip'), expected_l2_norm_clip)
+      self.assertEqual(global_state['l2_norm_clip'], expected_l2_norm_clip)
       self.assertEqual(result, expected_result)
       return global_state
 
-    self.assertEqual(getattr(global_state, 'l2_norm_clip'), 4.0)
+    self.assertEqual(global_state['l2_norm_clip'], 4.0)
     global_state = run_and_check(global_state, 3.0, 8.0)
     global_state = run_and_check(global_state, 2.0, 7.0)
     global_state = run_and_check(global_state, 1.0, 5.0)
@@ -234,6 +246,20 @@ class DpUtilsTest(test.TestCase):
     self.assertEqual(dp_global_state_type.__class__.__name__,
                      'NamedTupleTypeWithPyContainerType')
 
+  def test_default_from_tff_result_fn(self):
+
+    def check(elements, expected):
+      record = anonymous_tuple.AnonymousTuple(elements)
+      result = differential_privacy._default_from_tff_result_fn(record)
+      self.assertEqual(result, expected)
+
+    check([('a', 1), ('b', 2)], collections.OrderedDict([('a', 1), ('b', 2)]))
+    check([(None, 1), (None, 2)], [1, 2])
+
+    with self.assertRaisesRegex(ValueError, 'partially named fields'):
+      check([('a', 1), (None, 2)], None)
+
 
 if __name__ == '__main__':
+  default_executor.initialize_default_executor()
   test.main()

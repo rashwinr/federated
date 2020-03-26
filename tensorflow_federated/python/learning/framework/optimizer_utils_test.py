@@ -26,11 +26,14 @@ from tensorflow_federated.python.learning import model_examples
 from tensorflow_federated.python.learning import model_utils
 from tensorflow_federated.python.learning.framework import optimizer_utils
 
+tf.compat.v1.enable_v2_behavior()
+
 
 class DummyClientDeltaFn(optimizer_utils.ClientDeltaFn):
 
   def __init__(self, model_fn):
     self._model = model_fn()
+    self._optimizer = tf.keras.optimizers.SGD(learning_rate=0.1)
 
   @property
   def variables(self):
@@ -40,7 +43,11 @@ class DummyClientDeltaFn(optimizer_utils.ClientDeltaFn):
   def __call__(self, dataset, initial_weights):
     # Iterate over the dataset to get new metric values.
     def reduce_fn(dummy, batch):
-      self._model.train_on_batch(batch)
+      with tf.GradientTape() as tape:
+        output = self._model.forward_pass(batch)
+      gradients = tape.gradient(output.loss, self._model.trainable_variables)
+      self._optimizer.apply_gradients(
+          zip(gradients, self._model.trainable_variables))
       return dummy
 
     dataset.reduce(tf.constant(0.0), reduce_fn)
@@ -80,13 +87,12 @@ state_incrementing_broadcaster = tff.utils.StatefulBroadcastFn(
 class UtilsTest(test.TestCase):
 
   def test_state_with_new_model_weights(self):
-    trainable = [('b', np.array([1.0, 2.0])), ('a', np.array([[1.0]]))]
-    non_trainable = [('c', np.array(1))]
+    trainable = [np.array([1.0, 2.0]), np.array([[1.0]])]
+    non_trainable = [np.array(1)]
     state = anonymous_tuple.from_container(
         optimizer_utils.ServerState(
             model=model_utils.ModelWeights(
-                trainable=collections.OrderedDict(trainable),
-                non_trainable=collections.OrderedDict(non_trainable)),
+                trainable=trainable, non_trainable=non_trainable),
             optimizer_state=[],
             delta_aggregate_state=tf.constant(0),
             model_broadcast_state=tf.constant(0)),
@@ -97,30 +103,35 @@ class UtilsTest(test.TestCase):
         trainable_weights=[np.array([3.0, 3.0]),
                            np.array([[3.0]])],
         non_trainable_weights=[np.array(3)])
-    self.assertEqual(list(new_state.model.trainable.keys()), ['b', 'a'])
-    self.assertEqual(list(new_state.model.non_trainable.keys()), ['c'])
-    self.assertAllClose(new_state.model.trainable['b'], [3.0, 3.0])
-    self.assertAllClose(new_state.model.trainable['a'], [[3.0]])
-    self.assertAllClose(new_state.model.non_trainable['c'], 3)
+    self.assertAllClose(
+        new_state.model.trainable,
+        [np.array([3.0, 3.0]), np.array([[3.0]])])
+    self.assertAllClose(new_state.model.non_trainable, [3])
 
-    with self.assertRaisesRegex(ValueError, 'dtype'):
+    with self.assertRaisesRegex(TypeError, 'tensor type'):
       optimizer_utils.state_with_new_model_weights(
           state,
           trainable_weights=[np.array([3.0, 3.0]),
                              np.array([[3]])],
           non_trainable_weights=[np.array(3.0)])
 
-    with self.assertRaisesRegex(ValueError, 'shape'):
+    with self.assertRaisesRegex(TypeError, 'tensor type'):
       optimizer_utils.state_with_new_model_weights(
           state,
           trainable_weights=[np.array([3.0, 3.0]),
                              np.array([3.0])],
           non_trainable_weights=[np.array(3)])
 
-    with self.assertRaisesRegex(ValueError, 'Lengths differ'):
+    with self.assertRaisesRegex(TypeError, 'different lengths'):
       optimizer_utils.state_with_new_model_weights(
           state,
           trainable_weights=[np.array([3.0, 3.0])],
+          non_trainable_weights=[np.array(3)])
+
+    with self.assertRaisesRegex(TypeError, 'cannot be handled'):
+      optimizer_utils.state_with_new_model_weights(
+          state,
+          trainable_weights={'a': np.array([3.0, 3.0])},
           non_trainable_weights=[np.array(3)])
 
 
@@ -136,20 +147,16 @@ class ServerTest(test.TestCase, parameterized.TestCase):
   # pyformat: enable
   def test_server_eager_mode(self, optimizer_fn, updated_val,
                              num_optimizer_vars):
-    model_fn = lambda: model_examples.TrainableLinearRegression(feature_dim=2)
+    model_fn = lambda: model_examples.LinearRegression(feature_dim=2)
 
     server_state = optimizer_utils.server_init(model_fn, optimizer_fn, (), ())
     model_vars = self.evaluate(server_state.model)
     train_vars = model_vars.trainable
     self.assertLen(train_vars, 2)
-    self.assertAllClose(train_vars['a'], [[0.0], [0.0]])
-    self.assertEqual(train_vars['b'], 0.0)
-    self.assertEqual(model_vars.non_trainable, {'c': 0.0})
+    self.assertAllClose(train_vars, [np.zeros((2, 1)), 0.0])
+    self.assertAllClose(model_vars.non_trainable, [0.0])
     self.assertLen(server_state.optimizer_state, num_optimizer_vars)
-    weights_delta = collections.OrderedDict([
-        ('a', tf.constant([[1.0], [0.0]])),
-        ('b', tf.constant(1.0)),
-    ])
+    weights_delta = [tf.constant([[1.0], [0.0]]), tf.constant(1.0)]
     server_state = optimizer_utils.server_update_model(server_state,
                                                        weights_delta, model_fn,
                                                        optimizer_fn)
@@ -159,13 +166,12 @@ class ServerTest(test.TestCase, parameterized.TestCase):
     # For SGD: learning_Rate=0.1, update=[1.0, 0.0], initial model=[0.0, 0.0],
     # so updated_val=0.1
     self.assertLen(train_vars, 2)
-    self.assertAllClose(train_vars['a'], [[updated_val], [0.0]])
-    self.assertAllClose(train_vars['b'], updated_val)
-    self.assertEqual(model_vars.non_trainable, {'c': 0.0})
+    self.assertAllClose(train_vars, [[[updated_val], [0.0]], updated_val])
+    self.assertAllClose(model_vars.non_trainable, [0.0])
 
   def test_orchestration_execute(self):
     iterative_process = optimizer_utils.build_model_delta_optimizer_process(
-        model_fn=model_examples.TrainableLinearRegression,
+        model_fn=model_examples.LinearRegression,
         model_to_client_delta_fn=DummyClientDeltaFn,
         server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0),
         # A federated_mean that maintains an int32 state equal to the
@@ -184,18 +190,14 @@ class ServerTest(test.TestCase, parameterized.TestCase):
     federated_ds = [ds] * 3
 
     state = iterative_process.initialize()
-    self.assertSequenceAlmostEqual(state.model.trainable.a,
-                                   np.zeros([2, 1], np.float32))
-    self.assertAlmostEqual(state.model.trainable.b, 0.0)
-    self.assertAlmostEqual(state.model.non_trainable.c, 0.0)
+    self.assertAllClose(list(state.model.trainable), [np.zeros((2, 1)), 0.0])
+    self.assertAllClose(list(state.model.non_trainable), [0.0])
     self.assertEqual(state.delta_aggregate_state, 0)
     self.assertEqual(state.model_broadcast_state, 0)
 
     state, outputs = iterative_process.next(state, federated_ds)
-    self.assertSequenceAlmostEqual(state.model.trainable.a,
-                                   -np.ones([2, 1], np.float32))
-    self.assertAlmostEqual(state.model.trainable.b, -1.0)
-    self.assertAlmostEqual(state.model.non_trainable.c, 0.0)
+    self.assertAllClose(list(state.model.trainable), [-np.ones((2, 1)), -1.0])
+    self.assertAllClose(list(state.model.non_trainable), [0.0])
     self.assertEqual(state.delta_aggregate_state, 1)
     self.assertEqual(state.model_broadcast_state, 1)
 

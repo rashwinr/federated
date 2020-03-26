@@ -14,16 +14,13 @@
 # limitations under the License.
 """Defines the implementation of the base Computation interface."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow_federated.proto.v0 import computation_pb2 as pb
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import context_stack_base
 from tensorflow_federated.python.core.impl import type_utils
+from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import type_serialization
+from tensorflow_federated.python.core.impl.context_stack import context_stack_base
 from tensorflow_federated.python.core.impl.utils import function_utils
 
 
@@ -34,6 +31,10 @@ class ComputationImpl(function_utils.ConcreteFunction):
   def get_proto(cls, value):
     py_typecheck.check_type(value, cls)
     return value._computation_proto  # pylint: disable=protected-access
+
+  def to_building_block(self):
+    return building_blocks.ComputationBuildingBlock.from_proto(
+        self._computation_proto)
 
   def __init__(self, computation_proto, context_stack, annotated_type=None):
     """Constructs a new instance of ComputationImpl from the computation_proto.
@@ -67,12 +68,9 @@ class ComputationImpl(function_utils.ConcreteFunction):
 
     type_utils.check_well_formed(type_spec)
 
-    # We may need to modify the type signature to reflect the fact that in the
-    # underlying framework for composing computations, there is no concept of
-    # no-argument lambdas, but in Python, every computation needs to look like
-    # a function that needs to be invoked.
     if not isinstance(type_spec, computation_types.FunctionType):
-      type_spec = computation_types.FunctionType(None, type_spec)
+      raise TypeError('{} is not a functional type, from proto: {}'.format(
+          str(type_spec), str(computation_proto)))
 
-    super(ComputationImpl, self).__init__(type_spec, context_stack)
+    super().__init__(type_spec, context_stack)
     self._computation_proto = computation_proto

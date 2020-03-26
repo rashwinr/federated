@@ -13,16 +13,11 @@
 # limitations under the License.
 """Utilities for type conversion, type checking, type inference, etc."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
+from typing import Any, Callable, Dict, Type, TypeVar
 
 import attr
 import numpy as np
-import six
-from six.moves import range
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import anonymous_tuple
@@ -62,7 +57,7 @@ def infer_type(arg):
     return computation_types.TensorType(arg.dtype.base_dtype, arg.shape)
   elif isinstance(arg, TF_DATASET_REPRESENTATION_TYPES):
     return computation_types.SequenceType(
-        computation_types.to_type(tf.data.experimental.get_structure(arg)))
+        computation_types.to_type(arg.element_spec))
   elif isinstance(arg, anonymous_tuple.AnonymousTuple):
     return computation_types.NamedTupleType([
         (k, infer_type(v)) if k else infer_type(v)
@@ -72,16 +67,16 @@ def infer_type(arg):
     items = attr.asdict(
         arg, dict_factory=collections.OrderedDict, recurse=False)
     return computation_types.NamedTupleTypeWithPyContainerType(
-        [(k, infer_type(v)) for k, v in six.iteritems(items)], type(arg))
+        [(k, infer_type(v)) for k, v in items.items()], type(arg))
   elif py_typecheck.is_named_tuple(arg):
     items = arg._asdict()
     return computation_types.NamedTupleTypeWithPyContainerType(
-        [(k, infer_type(v)) for k, v in six.iteritems(items)], type(arg))
+        [(k, infer_type(v)) for k, v in items.items()], type(arg))
   elif isinstance(arg, dict):
     if isinstance(arg, collections.OrderedDict):
-      items = six.iteritems(arg)
+      items = arg.items()
     else:
-      items = sorted(six.iteritems(arg))
+      items = sorted(arg.items())
     return computation_types.NamedTupleTypeWithPyContainerType(
         [(k, infer_type(v)) for k, v in items], type(arg))
   elif isinstance(arg, (tuple, list)):
@@ -97,7 +92,7 @@ def infer_type(arg):
     else:
       return computation_types.NamedTupleTypeWithPyContainerType(
           elements, type(arg))
-  elif isinstance(arg, six.string_types):
+  elif isinstance(arg, str):
     return computation_types.TensorType(tf.string)
   elif isinstance(arg, (np.generic, np.ndarray)):
     return computation_types.TensorType(
@@ -135,12 +130,11 @@ def to_canonical_value(value):
     return None
   elif isinstance(value, dict):
     if isinstance(value, collections.OrderedDict):
-      items = six.iteritems(value)
+      items = value.items()
     else:
-      items = sorted(six.iteritems(value))
-    return anonymous_tuple.AnonymousTuple([
-        (k, to_canonical_value(v)) for k, v in items
-    ])
+      items = sorted(value.items())
+    return anonymous_tuple.AnonymousTuple(
+        (k, to_canonical_value(v)) for k, v in items)
   elif isinstance(value, (tuple, list)):
     return [to_canonical_value(e) for e in value]
   return value
@@ -190,7 +184,7 @@ def tf_dtypes_and_shapes_to_type(dtypes, shapes):
 
   def _parallel_dict_to_element_list(dtype_dict, shape_dict):
     return [(name, tf_dtypes_and_shapes_to_type(dtype_elem, shape_dict[name]))
-            for name, dtype_elem in six.iteritems(dtype_dict)]
+            for name, dtype_elem in dtype_dict.items()]
 
   if isinstance(dtypes, tf.DType):
     return computation_types.TensorType(dtypes, shapes)
@@ -210,9 +204,9 @@ def tf_dtypes_and_shapes_to_type(dtypes, shapes):
         _parallel_dict_to_element_list(dtype_dict, shapes_dict), type(dtypes))
   elif isinstance(dtypes, dict):
     if isinstance(dtypes, collections.OrderedDict):
-      items = six.iteritems(dtypes)
+      items = dtypes.items()
     else:
-      items = sorted(six.iteritems(dtypes))
+      items = sorted(dtypes.items())
     elements = [(name, tf_dtypes_and_shapes_to_type(dtypes_elem, shapes[name]))
                 for name, dtypes_elem in items]
     return computation_types.NamedTupleTypeWithPyContainerType(
@@ -236,7 +230,7 @@ def type_to_tf_dtypes_and_shapes(type_spec):
 
   Args:
     type_spec: Type specification, either an instance of
-      `computation_types.Type`, or something convertible to it. Ther type
+      `computation_types.Type`, or something convertible to it. The type
       specification must be composed of only named tuples and tensors. In all
       named tuples that appear in the type spec, all the elements must be named.
 
@@ -426,7 +420,7 @@ def get_named_tuple_element_type(type_spec, name):
     TypeError: if arguments are of the wrong computation_types.
     ValueError: if the tuple does not have an element with the given name.
   """
-  py_typecheck.check_type(name, six.string_types)
+  py_typecheck.check_type(name, str)
   type_spec = computation_types.to_type(type_spec)
   py_typecheck.check_type(type_spec, computation_types.NamedTupleType)
   elements = anonymous_tuple.to_elements(type_spec)
@@ -437,8 +431,10 @@ def get_named_tuple_element_type(type_spec, name):
                    'of the names {} in the named tuple type.'.format(
                        name, [e[0] for e in elements if e[0]]))
 
+T = TypeVar('T')
 
-def preorder_call(given_type, fn, arg):
+
+def preorder_call(given_type: Any, fn: Callable[[Any, T], T], arg: T):
   """Recursively calls `fn` on the possibly nested structure `given_type`.
 
   Walks the tree in a preorder manner. Updates `arg` on the way down with
@@ -478,13 +474,11 @@ def check_well_formed(type_spec):
     its `element` contains nowhere in its structure instances of
     `computation_types.SequenceType`,  `computation_types.FederatedType`
     or `computation_types.FunctionType`.
+
   Args:
     type_spec: The type specification to check, either an instance of
       `computation_types.Type` or something convertible to it by
       `computation_types.to_type()`.
-
-  Returns:
-    True iff `type_spec` represents a well-formed TFF type.
 
   Raises:
     TypeError: if `type_spec` is not a well-formed TFF type.
@@ -494,25 +488,35 @@ def check_well_formed(type_spec):
   # after revising the definition of well-formedness.
   type_signature = computation_types.to_type(type_spec)
 
-  def _check_for_disallowed_type(type_to_check, disallowed_types):
+  def _check_for_disallowed_type(
+      type_to_check: Any,
+      disallowed_types: Dict[Type[Any], str],
+  ) -> Dict[Type[Any], str]:
     """Checks subtree of `type_to_check` for `disallowed_types`."""
-    if isinstance(type_to_check, tuple(disallowed_types)):
-      raise TypeError('A {} has been encountered in the given type signature, '
-                      ' but {} is disallowed.'.format(type_to_check,
-                                                      disallowed_types))
+    for disallowed_type, disallowed_context in disallowed_types.items():
+      if isinstance(type_to_check, disallowed_type):
+        raise TypeError('{} has been encountered in the type signature {}. '
+                        '{} is disallowed inside of {}.'.format(
+                            type_to_check,
+                            type_signature,
+                            disallowed_type,
+                            disallowed_context,
+                        ))
     if isinstance(type_to_check, computation_types.FederatedType):
-      disallowed_types = set(
-          [computation_types.FederatedType,
-           computation_types.FunctionType]).union(disallowed_types)
+      context = 'federated types (types placed @CLIENT or @SERVER)'
+      disallowed_types = {
+          **disallowed_types, computation_types.FederatedType: context,
+          computation_types.FunctionType: context
+      }
     if isinstance(type_to_check, computation_types.SequenceType):
-      disallowed_types = set([
-          computation_types.FederatedType, computation_types.FunctionType,
-          computation_types.SequenceType
-      ]).union(disallowed_types)
+      context = 'sequence types'
+      disallowed_types = {
+          **disallowed_types, computation_types.FederatedType: context,
+          computation_types.SequenceType: context
+      }
     return disallowed_types
 
-  preorder_call(type_signature, _check_for_disallowed_type, set())
-  return True
+  preorder_call(type_signature, _check_for_disallowed_type, dict())
 
 
 def type_tree_contains_only(type_spec, whitelisted_types):
@@ -558,6 +562,13 @@ def is_tensorflow_compatible_type(type_spec):
                        computation_types.SequenceType,
                        computation_types.NamedTupleType)
   return type_tree_contains_only(type_spec, tf_comp_whitelist)
+
+
+def check_tensorflow_compatible_type(type_spec):
+  if not is_tensorflow_compatible_type(type_spec):
+    raise TypeError(
+        'Expected type to be compatible with TensorFlow (i.e. tensor, '
+        'sequence, or tuple types), found {}.'.format(type_spec))
 
 
 def is_generic_op_compatible_type(type_spec):
@@ -788,6 +799,44 @@ def is_sum_compatible(type_spec):
     return False
 
 
+def check_is_sum_compatible(type_spec):
+  if not is_sum_compatible(type_spec):
+    raise TypeError(
+        'Expected a type which is compatible with the sum operator, found {}.'
+        .format(type_spec))
+
+
+def is_structure_of_integers(type_spec):
+  """Determines if `type_spec` is a structure of integers.
+
+  Args:
+    type_spec: Either an instance of computation_types.Type, or something
+      convertible to it.
+
+  Returns:
+    `True` iff `type_spec` is a structure of integers, otherwise `False`.
+  """
+  type_spec = computation_types.to_type(type_spec)
+  if isinstance(type_spec, computation_types.TensorType):
+    py_typecheck.check_type(type_spec.dtype, tf.DType)
+    return type_spec.dtype.is_integer
+  elif isinstance(type_spec, computation_types.NamedTupleType):
+    return all(
+        is_structure_of_integers(v)
+        for _, v in anonymous_tuple.iter_elements(type_spec))
+  elif isinstance(type_spec, computation_types.FederatedType):
+    return is_structure_of_integers(type_spec.member)
+  else:
+    return False
+
+
+def check_is_structure_of_integers(type_spec):
+  if not is_sum_compatible(type_spec):
+    raise TypeError(
+        'Expected a type which is structure of integers, found {}.'.format(
+            type_spec))
+
+
 def check_federated_type(type_spec,
                          member=None,
                          placement=None,
@@ -964,7 +1013,7 @@ def check_equivalent_types(type1, type2):
     TypeError: If `not are_equivalent_types(type1, type2)`.
   """
   if not are_equivalent_types(type1, type2):
-    raise TypeError('Types {} and {} are not equivalent.')
+    raise TypeError('Types {} and {} are not equivalent.'.format(type1, type2))
 
 
 def is_anon_tuple_with_py_container(value, type_spec):
@@ -1030,7 +1079,7 @@ def convert_to_py_container(value, type_spec):
                        'elements.'.format(anon_tuple, container_type))
     if (num_named_elements > 0 and
         is_container_type_without_names(container_type)):
-      # NOTE: This could be relaxed in some cases if needed.
+      # Note: This could be relaxed in some cases if needed.
       raise ValueError(
           'Cannot represent value {} with named elements '
           'using container type {} which does not support names.'.format(
@@ -1168,6 +1217,10 @@ def is_concrete_instance_of(type_with_concrete_elements,
       return computation_types.FederatedType(new_member,
                                              abstract_type_spec.placement,
                                              abstract_type_spec.all_equal)
+    elif abstract_type_spec is None:
+      if concrete_type_spec is not None:
+        raise TypeError(type_error_string)
+      return None
     else:
       raise TypeError(
           'Unexpected abstract typespec {}.'.format(abstract_type_spec))
@@ -1315,51 +1368,6 @@ def reconcile_value_type_with_type_spec(value_type, type_spec):
     else:
       raise TypeError('Expected a value of type {}, found {}.'.format(
           type_spec, value_type))
-
-
-def get_function_type(type_spec):
-  """Constructs a functional type signature for `type_spec`.
-
-  Given `type_spec` that is `T`, a functional type signature may be either `T`
-  itelf if it is a function, or `( -> T)` otherwise. This allows types from
-  protos to be matched to how types are represented at the level of the Python
-  wrapping.
-
-  Args:
-    type_spec: An instance of `tff.Type` of something convertible to it.
-
-  Returns:
-    An instance of `tff.FunctionType`, possibly with no argument if `type_spec`
-    is not functional.
-  """
-  type_spec = computation_types.to_type(type_spec)
-  py_typecheck.check_type(type_spec, computation_types.Type)
-  if isinstance(type_spec, computation_types.FunctionType):
-    return type_spec
-  else:
-    return computation_types.FunctionType(None, type_spec)
-
-
-def get_argument_type(type_spec):
-  """Constructs a type signature for functional `type_spec`.
-
-  Given `type_spec` of the form `(T -> U)`, an argument type signature is
-  simple `type_spec` itself. Given `type_spec` of the form `( -> U)`, however,
-  the argument type signature is simply `U`. This allows types constructed
-  to match Python wrappers (with no arguments) to be projected back into a form
-  compatible with how they're represented in protos.
-
-  Args:
-    type_spec: An instance of `tff.FunctionType`.
-
-  Returns:
-    An instance of `tff.Type` as described above.
-  """
-  py_typecheck.check_type(type_spec, computation_types.FunctionType)
-  if type_spec.parameter is not None:
-    return type_spec
-  else:
-    return type_spec.result
 
 
 def to_non_all_equal(type_spec):

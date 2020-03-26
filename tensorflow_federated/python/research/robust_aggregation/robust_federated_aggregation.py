@@ -14,12 +14,6 @@
 # limitations under the License.
 """Simple implementation of the RFA Algorithm for robust aggregation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import six
-from six.moves import range
 import tensorflow as tf
 import tensorflow_federated as tff
 
@@ -55,7 +49,7 @@ def build_stateless_robust_aggregation(model_type,
   def update_weight_fn(weight, server_model, client_model):
     sqnorms = tf.nest.map_structure(lambda a, b: tf.norm(a - b)**2,
                                     server_model, client_model)
-    sqnorm = tf.reduce_sum(list(six.itervalues(sqnorms)))
+    sqnorm = tf.reduce_sum(sqnorms)
     return weight / tf.math.maximum(tolerance, tf.math.sqrt(sqnorm))
 
   client_model_type = tff.FederatedType(model_type, tff.CLIENTS)

@@ -21,7 +21,10 @@ from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.impl import computation_impl
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import placement_literals
+from tensorflow_federated.python.core.impl.executors import default_executor
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper_instances
+
+tf.compat.v1.enable_v2_behavior()
 
 
 class ComputationWrapperInstancesTest(test.TestCase):
@@ -88,12 +91,8 @@ class ComputationWrapperInstancesTest(test.TestCase):
     self.assertEqual(
         str(foo.type_signature), '(<(int32 -> int32),int32> -> int32)')
 
-    # TODO(b/113112885): Remove this protected member access as noted above.
-    comp = foo._computation_proto
-
-    building_block = (building_blocks.ComputationBuildingBlock.from_proto(comp))
     self.assertEqual(
-        str(building_block),
+        str(foo.to_building_block()),
         '(FEDERATED_arg -> FEDERATED_arg[0](FEDERATED_arg[0](FEDERATED_arg[1])))'
     )
 
@@ -171,4 +170,5 @@ class ToComputationImplTest(test.TestCase):
 
 
 if __name__ == '__main__':
+  default_executor.initialize_default_executor()
   test.main()

@@ -13,12 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utils for TFF computation building blocks."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import six
+import collections
 
 from tensorflow_federated.python.common_libs import py_typecheck
 from tensorflow_federated.python.common_libs import serialization_utils
@@ -30,14 +25,14 @@ def is_called_intrinsic(comp, uri=None):
 
   Args:
     comp: The computation building block to test.
-    uri: A uri or a collection of uris; the same as what is accepted by
+    uri: An optional URI or list of URIs; the same form as what is accepted by
       isinstance.
 
   Returns:
     `True` if `comp` is a called intrinsic with the given `uri`, otherwise
     `False`.
   """
-  if isinstance(uri, six.string_types):
+  if isinstance(uri, str):
     uri = [uri]
   return (isinstance(comp, building_blocks.Call) and
           isinstance(comp.function, building_blocks.Intrinsic) and
@@ -61,7 +56,8 @@ def count_tensorflow_ops_in(comp):
                      '`tensorflow` variety to `count_tensorflow_ops_in`.')
   graph_def = serialization_utils.unpack_graph_def(
       comp.proto.tensorflow.graph_def)
-  return len(graph_def.node)
+  return len(graph_def.node) + sum(
+      [len(graph_func.node_def) for graph_func in graph_def.library.function])
 
 
 def count_tensorflow_variables_in(comp):
@@ -78,7 +74,42 @@ def count_tensorflow_variables_in(comp):
   def _node_is_variable(node):
     # TODO(b/137887596): Follow up on ways to count Variables on the GraphDef
     # level.
-    return (str(node.op).lower().startswith('variable') or
-            str(node.op).lower() == 'varhandleop')
+    op_name = str(node.op).lower()
+    return ((op_name.startswith('variable') and
+             op_name not in ['variableshape']) or op_name == 'varhandleop')
 
-  return len([x for x in graph_def.node if _node_is_variable(x)])
+  def _count_vars_in_function_lib(func_library):
+    total_nodes = 0
+    for graph_func in func_library.function:
+      total_nodes += sum(
+          _node_is_variable(node) for node in graph_func.node_def)
+    return total_nodes
+
+  return (sum(_node_is_variable(node) for node in graph_def.node) +
+          _count_vars_in_function_lib(graph_def.library))
+
+
+def get_device_placement_in(comp):
+  """Gets counter of device placement for tensorflow compuation `comp`."""
+  py_typecheck.check_type(comp, building_blocks.ComputationBuildingBlock)
+  if (not isinstance(comp, building_blocks.CompiledComputation)) or (
+      comp.proto.WhichOneof('computation') != 'tensorflow'):
+    raise ValueError('Please pass a '
+                     '`building_blocks.CompiledComputation` of the '
+                     '`tensorflow` variety to `get_device_placement_in`. (Got '
+                     'a [{t}]).'.format(t=type(comp)))
+  graph_def = serialization_utils.unpack_graph_def(
+      comp.proto.tensorflow.graph_def)
+
+  counter = collections.Counter()
+
+  def _populate_counter_in_function_lib(func_library):
+    for graph_func in func_library.function:
+      counter.update(node.device for node in graph_func.node_def)
+    for graph_func in func_library.gradient:
+      counter.update(node.device for node in graph_func.node_def)
+
+  counter.update(node.device for node in graph_def.node)
+  _populate_counter_in_function_lib(graph_def.library)
+
+  return counter

@@ -21,16 +21,10 @@ them side by side and compares their results against this executor for a number
 of computations.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
+from typing import Any, Dict, Optional
 
 import numpy as np
-import six
-from six.moves import range
-from six.moves import zip
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import anonymous_tuple
@@ -40,15 +34,15 @@ from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import placements
 from tensorflow_federated.python.core.impl import compiler_pipeline
 from tensorflow_federated.python.core.impl import computation_impl
-from tensorflow_federated.python.core.impl import context_base
-from tensorflow_federated.python.core.impl import runtime_utils
 from tensorflow_federated.python.core.impl import tensorflow_deserialization
-from tensorflow_federated.python.core.impl import transformations
 from tensorflow_federated.python.core.impl import type_utils
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import intrinsic_defs
 from tensorflow_federated.python.core.impl.compiler import placement_literals
+from tensorflow_federated.python.core.impl.compiler import tree_transformations
 from tensorflow_federated.python.core.impl.compiler import type_factory
+from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.executors import cardinalities_utils
 from tensorflow_federated.python.core.impl.utils import tensorflow_utils
 
 
@@ -121,7 +115,7 @@ def to_representation_for_type(value, type_spec, callable_handler=None):
       For those types that have `all_equal_` set to `False`, the representation
       is a Python list of member constituents.
 
-      NOTE: This function does not attempt at validating that the sizes of lists
+      Note: This function does not attempt at validating that the sizes of lists
       that represent federated values match the corresponding placemenets. The
       cardinality analysis is a separate step, handled by the reference executor
       at a different point. As long as values can be packed into a Python list,
@@ -150,7 +144,7 @@ def to_representation_for_type(value, type_spec, callable_handler=None):
   if callable_handler is not None:
     py_typecheck.check_callable(callable_handler)
 
-  # NOTE: We do not simply call `type_utils.infer_type()` on `value`, as the
+  # Note: We do not simply call `type_utils.infer_type()` on `value`, as the
   # representations of values in the reference executor are only a subset of
   # the Python types recognized by that helper function.
 
@@ -194,6 +188,12 @@ def to_representation_for_type(value, type_spec, callable_handler=None):
     return anonymous_tuple.AnonymousTuple(result_elements)
   elif isinstance(type_spec, computation_types.SequenceType):
     if isinstance(value, tf.data.Dataset):
+      inferred_type_spec = computation_types.SequenceType(
+          computation_types.to_type(value.element_spec))
+      if not type_utils.is_assignable_from(type_spec, inferred_type_spec):
+        raise TypeError(
+            'Value of type {!s} not assignable to expected type {!s}'.format(
+                inferred_type_spec, type_spec))
       if tf.executing_eagerly():
         return [
             to_representation_for_type(v, type_spec.element, callable_handler)
@@ -246,11 +246,14 @@ def to_representation_for_type(value, type_spec, callable_handler=None):
         'is currently an unsupported TFF type {}.'.format(value, type_spec))
 
 
-def stamp_computed_value_into_graph(value, graph):
+def stamp_computed_value_into_graph(
+    value: Optional[ComputedValue],
+    graph: tf.Graph,
+) -> Any:
   """Stamps `value` in `graph`.
 
   Args:
-    value: An instance of `ComputedValue`.
+    value: An optional `ComputedValue` to stamp into the graph.
     graph: The graph to stamp in.
 
   Returns:
@@ -368,7 +371,7 @@ def numpy_cast(value, dtype, shape):
               shape.dims[i].value is None) for i in range(len(shape.dims))):
     raise TypeError('Expected shape {}, found {}.'.format(
         shape.dims, value_as_numpy_array.shape))
-  # NOTE: We don't want to make things more complicated than necessary by
+  # Note: We don't want to make things more complicated than necessary by
   # returning the result as an array if it's just a plain scalar, so we
   # special-case this by pulling the singleton `np.ndarray`'s element out.
   if len(value_as_numpy_array.shape) > 0:  # pylint: disable=g-explicit-length-test
@@ -414,9 +417,9 @@ class ComputationContext(object):
   """Encapsulates context/state in which computations or parts thereof run."""
 
   def __init__(self,
-               parent_context=None,
-               local_symbols=None,
-               cardinalities=None):
+               parent_context: Optional['ComputationContext'] = None,
+               local_symbols: Optional[Dict[str, ComputedValue]] = None,
+               cardinalities: Optional[Dict[str, int]] = None):
     """Constructs a new execution context.
 
     Args:
@@ -432,20 +435,20 @@ class ComputationContext(object):
     self._local_symbols = {}
     if local_symbols is not None:
       py_typecheck.check_type(local_symbols, dict)
-      for k, v in six.iteritems(local_symbols):
-        py_typecheck.check_type(k, six.string_types)
+      for k, v in local_symbols.items():
+        py_typecheck.check_type(k, str)
         py_typecheck.check_type(v, ComputedValue)
         self._local_symbols[str(k)] = v
     if cardinalities is not None:
       py_typecheck.check_type(cardinalities, dict)
-      for k, v in six.iteritems(cardinalities):
+      for k, v in cardinalities.items():
         py_typecheck.check_type(k, placement_literals.PlacementLiteral)
         py_typecheck.check_type(v, int)
       self._cardinalities = cardinalities
     else:
       self._cardinalities = None
 
-  def resolve_reference(self, name):
+  def resolve_reference(self, name: str) -> ComputedValue:
     """Resolves the given reference `name` in this context.
 
     Args:
@@ -457,7 +460,7 @@ class ComputationContext(object):
     Raises:
       ValueError: If the name cannot be resolved.
     """
-    py_typecheck.check_type(name, six.string_types)
+    py_typecheck.check_type(name, str)
     value = self._local_symbols.get(str(name))
     if value is not None:
       return value
@@ -467,11 +470,12 @@ class ComputationContext(object):
       raise ValueError(
           'The name \'{}\' is not defined in this context.'.format(name))
 
-  def get_cardinality(self, placement):
+  def get_cardinality(self,
+                      placement: placement_literals.PlacementLiteral) -> int:
     """Returns the cardinality for `placement`.
 
     Args:
-      placement: The placement, for which to return cardinality.
+      placement: The placement for which to return cardinality.
     """
     py_typecheck.check_type(placement, placement_literals.PlacementLiteral)
     if self._cardinalities is not None and placement in self._cardinalities:
@@ -480,10 +484,14 @@ class ComputationContext(object):
       return self._parent_context.get_cardinality(placement)
     else:
       raise ValueError(
-          'Unable to determine the cardinality for {}.'.format(placement))
+          'Unable to determine the cardinality for {placement}. '
+          'Consider adding an argument with placement {placement} to the '
+          'top-level federated computation. This will allow the cardinality to '
+          'be inferred automatically.'.format(placement=placement))
 
 
-def fit_argument(arg, type_spec, context):
+def fit_argument(arg: ComputedValue, type_spec,
+                 context: Optional[ComputationContext]):
   """Fits the given argument `arg` to match the given parameter `type_spec`.
 
   Args:
@@ -563,6 +571,10 @@ class ReferenceExecutor(context_base.Context):
   this class. High-performance simulations on large data sets will require a
   separate executor optimized for performance. This executor is plugged in as
   the handler of computation invocations at the top level of the context stack.
+
+  Note: The `tff.federated_secure_sum()` intrinsic is implemented using a
+  non-secure algorithm in order to enable testing of the semantics of federated
+  computaitons using the  secure sum intrinsic.
   """
 
   def __init__(self, compiler=None):
@@ -589,12 +601,18 @@ class ReferenceExecutor(context_base.Context):
             self._federated_broadcast,
         intrinsic_defs.FEDERATED_COLLECT.uri:
             self._federated_collect,
+        intrinsic_defs.FEDERATED_EVAL_AT_CLIENTS.uri:
+            self._federated_eval_at_clients,
+        intrinsic_defs.FEDERATED_EVAL_AT_SERVER.uri:
+            self._federated_eval_at_server,
         intrinsic_defs.FEDERATED_MAP.uri:
             self._federated_map,
         intrinsic_defs.FEDERATED_MAP_ALL_EQUAL.uri:
             self._federated_map_all_equal,
         intrinsic_defs.FEDERATED_REDUCE.uri:
             self._federated_reduce,
+        intrinsic_defs.FEDERATED_SECURE_SUM.uri:
+            self._federated_secure_sum,
         intrinsic_defs.FEDERATED_SUM.uri:
             self._federated_sum,
         intrinsic_defs.FEDERATED_VALUE_AT_CLIENTS.uri:
@@ -630,49 +648,59 @@ class ReferenceExecutor(context_base.Context):
 
   def invoke(self, fn, arg):
     comp = self._compile(fn)
-    cardinalities = {}
+    cardinalities = {placement_literals.SERVER: 1}
     root_context = ComputationContext(cardinalities=cardinalities)
+    if arg is not None:
+
+      def _handle_callable(fn, fn_type):
+        py_typecheck.check_type(fn, computation_base.Computation)
+        type_utils.check_assignable_from(fn.type_signature, fn_type)
+        computed_fn = self._compute(self._compile(fn), root_context)
+        return computed_fn.value
+
+      computed_arg = ComputedValue(
+          to_representation_for_type(arg, comp.type_signature.parameter,
+                                     _handle_callable),
+          comp.type_signature.parameter)
+      cardinalities.update(
+          cardinalities_utils.infer_cardinalities(computed_arg.value,
+                                                  computed_arg.type_signature))
+    else:
+      computed_arg = None
     computed_comp = self._compute(comp, root_context)
     type_utils.check_assignable_from(comp.type_signature,
                                      computed_comp.type_signature)
+
+    def _convert_to_py_container(value, type_spec):
+      """Converts value to a Python container if type_spec has an annotation."""
+      if type_utils.is_anon_tuple_with_py_container(value, type_spec):
+        return type_utils.convert_to_py_container(value, type_spec)
+      elif isinstance(type_spec, computation_types.SequenceType):
+        if all(
+            type_utils.is_anon_tuple_with_py_container(
+                element, type_spec.element) for element in value):
+          return [
+              type_utils.convert_to_py_container(element, type_spec.element)
+              for element in value
+          ]
+      return value
+
     if not isinstance(computed_comp.type_signature,
                       computation_types.FunctionType):
-      if arg is not None:
+      if computed_arg is not None:
         raise TypeError('Unexpected argument {}.'.format(arg))
       else:
         value = computed_comp.value
         result_type = fn.type_signature.result
-        if type_utils.is_anon_tuple_with_py_container(value, result_type):
-          return type_utils.convert_to_py_container(value, result_type)
-        return value
+        return _convert_to_py_container(value, result_type)
     else:
-      if arg is not None:
-
-        def _handle_callable(fn, fn_type):
-          py_typecheck.check_type(fn, computation_base.Computation)
-          type_utils.check_assignable_from(fn.type_signature, fn_type)
-          computed_fn = self._compute(self._compile(fn), root_context)
-          return computed_fn.value
-
-        computed_arg = ComputedValue(
-            to_representation_for_type(arg,
-                                       computed_comp.type_signature.parameter,
-                                       _handle_callable),
-            computed_comp.type_signature.parameter)
-        cardinalities.update(
-            runtime_utils.infer_cardinalities(computed_arg.value,
-                                              computed_arg.type_signature))
-      else:
-        computed_arg = None
       result = computed_comp.value(computed_arg)
       py_typecheck.check_type(result, ComputedValue)
       type_utils.check_assignable_from(comp.type_signature.result,
                                        result.type_signature)
       value = result.value
       fn_result_type = fn.type_signature.result
-      if type_utils.is_anon_tuple_with_py_container(value, fn_result_type):
-        return type_utils.convert_to_py_container(value, fn_result_type)
-      return value
+      return _convert_to_py_container(value, fn_result_type)
 
   def _compile(self, comp):
     """Compiles a `computation_base.Computation` to prepare it for execution.
@@ -687,7 +715,7 @@ class ReferenceExecutor(context_base.Context):
     py_typecheck.check_type(comp, computation_base.Computation)
     if self._compiler is not None:
       comp = self._compiler.compile(comp)
-    comp, _ = transformations.uniquify_compiled_computation_names(
+    comp, _ = tree_transformations.uniquify_compiled_computation_names(
         building_blocks.ComputationBuildingBlock.from_proto(
             computation_impl.ComputationImpl.get_proto(comp)))
     return comp
@@ -801,6 +829,13 @@ class ReferenceExecutor(context_base.Context):
     py_typecheck.check_type(context, ComputationContext)
 
     def _wrap(arg):
+      """Wraps `context` in a new context which sets the parameter's value."""
+      if comp.parameter_type is None:
+        if arg is not None:
+          raise TypeError(
+              'No-argument lambda called with argument of type {}.'.format(
+                  arg.type_signature))
+        return context
       py_typecheck.check_type(arg, ComputedValue)
       if not type_utils.is_assignable_from(comp.parameter_type,
                                            arg.type_signature):
@@ -837,10 +872,10 @@ class ReferenceExecutor(context_base.Context):
       if isinstance(comp.type_signature, computation_types.FunctionType):
         arg_type = comp.type_signature.parameter
         return ComputedValue(
-            lambda x: my_method(fit_argument(x, arg_type, context)),
+            lambda x: my_method(fit_argument(x, arg_type, context), context),
             comp.type_signature)
       else:
-        return my_method(comp.type_signature)
+        return my_method(comp.type_signature, context)
     else:
       raise NotImplementedError('Intrinsic {} is currently unsupported.'.format(
           comp.uri))
@@ -853,7 +888,8 @@ class ReferenceExecutor(context_base.Context):
     py_typecheck.check_type(comp, building_blocks.Placement)
     raise NotImplementedError('Placement is currently unsupported.')
 
-  def _sequence_sum(self, arg):
+  def _sequence_sum(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape).
     inferred_type_spec = type_utils.infer_type(arg.value[0])
     py_typecheck.check_type(arg.type_signature, computation_types.SequenceType)
     total = self._generic_zero(inferred_type_spec)
@@ -864,7 +900,8 @@ class ReferenceExecutor(context_base.Context):
               [arg.type_signature.element, arg.type_signature.element]))
     return total
 
-  def _federated_collect(self, arg):
+  def _federated_collect(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape).
     type_utils.check_federated_type(arg.type_signature, None,
                                     placements.CLIENTS, False)
     return ComputedValue(
@@ -873,7 +910,38 @@ class ReferenceExecutor(context_base.Context):
             computation_types.SequenceType(arg.type_signature.member),
             placements.SERVER, True))
 
-  def _federated_map(self, arg):
+  def _federated_eval_shared(
+      self,
+      arg: ComputedValue,
+      context: ComputationContext,
+      placement: placement_literals.PlacementLiteral,
+      all_equal: bool,
+  ) -> ComputedValue:
+    py_typecheck.check_type(arg, ComputedValue)
+    py_typecheck.check_type(arg.type_signature, computation_types.FunctionType)
+    if arg.type_signature.parameter is not None:
+      raise TypeError(
+          'Expected federated_eval parameter to be `None`, found {}.'.format(
+              arg.type_signature.parameter))
+    cardinality = context.get_cardinality(placement)
+    fn_to_eval = arg.value
+    if cardinality == 1:
+      value = fn_to_eval(None).value
+    else:
+      value = [fn_to_eval(None).value for _ in range(cardinality)]
+    return ComputedValue(
+        value,
+        computation_types.FederatedType(
+            arg.type_signature.result, placement, all_equal=all_equal))
+
+  def _federated_eval_at_clients(self, arg, context):
+    return self._federated_eval_shared(arg, context, placements.CLIENTS, False)
+
+  def _federated_eval_at_server(self, arg, context):
+    return self._federated_eval_shared(arg, context, placements.SERVER, True)
+
+  def _federated_map(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape).
     mapping_type = arg.type_signature[0]
     py_typecheck.check_type(mapping_type, computation_types.FunctionType)
     type_utils.check_federated_type(arg.type_signature[1],
@@ -887,7 +955,8 @@ class ReferenceExecutor(context_base.Context):
                                                   placements.CLIENTS, False)
     return ComputedValue(result_val, result_type)
 
-  def _federated_map_all_equal(self, arg):
+  def _federated_map_all_equal(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     mapping_type = arg.type_signature[0]
     py_typecheck.check_type(mapping_type, computation_types.FunctionType)
     type_utils.check_federated_type(
@@ -901,7 +970,8 @@ class ReferenceExecutor(context_base.Context):
         mapping_type.result, placements.CLIENTS, all_equal=True)
     return ComputedValue(result_val, result_type)
 
-  def _federated_apply(self, arg):
+  def _federated_apply(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     mapping_type = arg.type_signature[0]
     py_typecheck.check_type(mapping_type, computation_types.FunctionType)
     type_utils.check_federated_type(arg.type_signature[1],
@@ -913,27 +983,35 @@ class ReferenceExecutor(context_base.Context):
                                                   placements.SERVER, True)
     return ComputedValue(result_val, result_type)
 
-  def _federated_sum(self, arg):
+  def _federated_secure_sum(self, arg, context):
+    py_typecheck.check_type(arg.type_signature,
+                            computation_types.NamedTupleType)
+    py_typecheck.check_len(arg.type_signature, 2)
+    value = ComputedValue(arg.value[0], arg.type_signature[0])
+    return self._federated_sum(value, context)
+
+  def _federated_sum(self, arg, context):
     type_utils.check_federated_type(arg.type_signature, None,
                                     placements.CLIENTS, False)
-    collected_val = self._federated_collect(arg)
-    federated_apply_arg = anonymous_tuple.AnonymousTuple([
-        (None, self._sequence_sum), (None, collected_val.value)
-    ])
+    collected_val = self._federated_collect(arg, context)
+    federated_apply_arg = anonymous_tuple.from_container(
+        (lambda arg: self._sequence_sum(arg, context), collected_val.value))
     apply_fn_type = computation_types.FunctionType(
         computation_types.SequenceType(arg.type_signature.member),
         arg.type_signature.member)
     return self._federated_apply(
         ComputedValue(federated_apply_arg,
-                      [apply_fn_type, collected_val.type_signature]))
+                      [apply_fn_type, collected_val.type_signature]), context)
 
-  def _federated_value_at_clients(self, arg):
+  def _federated_value_at_clients(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     return ComputedValue(
         arg.value,
         computation_types.FederatedType(
             arg.type_signature, placements.CLIENTS, all_equal=True))
 
-  def _federated_value_at_server(self, arg):
+  def _federated_value_at_server(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     return ComputedValue(
         arg.value,
         computation_types.FederatedType(
@@ -949,11 +1027,11 @@ class ReferenceExecutor(context_base.Context):
           zeros_val = sess.run(zeros)
       return ComputedValue(zeros_val, type_spec)
     elif isinstance(type_spec, computation_types.NamedTupleType):
+      type_elements_iter = anonymous_tuple.iter_elements(type_spec)
       return ComputedValue(
-          anonymous_tuple.AnonymousTuple([
-              (k, self._generic_zero(v).value)
-              for k, v in anonymous_tuple.iter_elements(type_spec)
-          ]), type_spec)
+          anonymous_tuple.AnonymousTuple(
+              (k, self._generic_zero(v).value) for k, v in type_elements_iter),
+          type_spec)
     elif isinstance(
         type_spec,
         (computation_types.SequenceType, computation_types.FunctionType,
@@ -1013,7 +1091,8 @@ class ReferenceExecutor(context_base.Context):
           'Please file an issue on GitHub if you need this type supported'
           .format(element_type, arg.value[0]))
 
-  def _sequence_map(self, arg):
+  def _sequence_map(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     mapping_type = arg.type_signature[0]
     py_typecheck.check_type(mapping_type, computation_types.FunctionType)
     sequence_type = arg.type_signature[1]
@@ -1027,7 +1106,8 @@ class ReferenceExecutor(context_base.Context):
     result_type = computation_types.SequenceType(mapping_type.result)
     return ComputedValue(result_val, result_type)
 
-  def _sequence_reduce(self, arg):
+  def _sequence_reduce(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     py_typecheck.check_type(arg.type_signature,
                             computation_types.NamedTupleType)
     sequence_type = arg.type_signature[0]
@@ -1046,7 +1126,7 @@ class ReferenceExecutor(context_base.Context):
               op_type.parameter))
     return total
 
-  def _federated_reduce(self, arg):
+  def _federated_reduce(self, arg, context):
     py_typecheck.check_type(arg.type_signature,
                             computation_types.NamedTupleType)
     federated_type = arg.type_signature[0]
@@ -1064,20 +1144,21 @@ class ReferenceExecutor(context_base.Context):
           ComputedValue(
               anonymous_tuple.AnonymousTuple([(None, total.value), (None, v)]),
               op_type.parameter))
-    return self._federated_value_at_server(total)
+    return self._federated_value_at_server(total, context)
 
-  def _federated_mean(self, arg):
+  def _federated_mean(self, arg, context):
     type_utils.check_federated_type(arg.type_signature, None,
                                     placements.CLIENTS, False)
     py_typecheck.check_type(arg.value, list)
-    server_sum = self._federated_sum(arg)
+    server_sum = self._federated_sum(arg, context)
     unplaced_avg = multiply_by_scalar(
         ComputedValue(server_sum.value, server_sum.type_signature.member),
         1.0 / float(len(arg.value)))
     return ComputedValue(unplaced_avg.value,
                          type_factory.at_server(unplaced_avg.type_signature))
 
-  def _federated_zip_at_server(self, arg):
+  def _federated_zip_at_server(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     py_typecheck.check_type(arg.type_signature,
                             computation_types.NamedTupleType)
     for idx in range(len(arg.type_signature)):
@@ -1091,7 +1172,8 @@ class ReferenceExecutor(context_base.Context):
                 for k, v in anonymous_tuple.iter_elements(arg.type_signature)
             ])))
 
-  def _federated_zip_at_clients(self, arg):
+  def _federated_zip_at_clients(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     py_typecheck.check_type(arg.type_signature,
                             computation_types.NamedTupleType)
     py_typecheck.check_type(arg.value, anonymous_tuple.AnonymousTuple)
@@ -1110,7 +1192,7 @@ class ReferenceExecutor(context_base.Context):
         type_factory.at_clients(
             computation_types.NamedTupleType(zip_arg_types)))
 
-  def _federated_aggregate(self, arg):
+  def _federated_aggregate(self, arg, context):
     py_typecheck.check_type(arg.type_signature,
                             computation_types.NamedTupleType)
     if len(arg.type_signature) != 5:
@@ -1119,12 +1201,13 @@ class ReferenceExecutor(context_base.Context):
     root_accumulator = self._federated_reduce(
         ComputedValue(
             anonymous_tuple.from_container([arg.value[k] for k in range(3)]),
-            [arg.type_signature[k] for k in range(3)]))
+            [arg.type_signature[k] for k in range(3)]), context)
     return self._federated_apply(
         ComputedValue([arg.value[4], root_accumulator.value],
-                      [arg.type_signature[4], root_accumulator.type_signature]))
+                      [arg.type_signature[4], root_accumulator.type_signature]),
+        context)
 
-  def _federated_weighted_mean(self, arg):
+  def _federated_weighted_mean(self, arg, context):
     type_utils.check_valid_federated_weighted_mean_argument_tuple_type(
         arg.type_signature)
     v_type = arg.type_signature[0].member
@@ -1134,9 +1217,10 @@ class ReferenceExecutor(context_base.Context):
         for v, w in zip(arg.value[0], arg.value[1])
     ]
     return self._federated_sum(
-        ComputedValue(products_val, type_factory.at_clients(v_type)))
+        ComputedValue(products_val, type_factory.at_clients(v_type)), context)
 
-  def _federated_broadcast(self, arg):
+  def _federated_broadcast(self, arg, context):
+    del context  # Unused (left as arg b.c. functions must have same shape)
     type_utils.check_federated_type(arg.type_signature, None, placements.SERVER,
                                     True)
     return ComputedValue(

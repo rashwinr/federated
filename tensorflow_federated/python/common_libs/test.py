@@ -14,12 +14,7 @@
 # limitations under the License.
 """General purpose test utils for TFF."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import absltest
-from six.moves import zip
 import tensorflow as tf
 
 
@@ -27,7 +22,7 @@ class TestCase(tf.test.TestCase, absltest.TestCase):
   """Base class for TensroFlow Federated tests."""
 
   def setUp(self):
-    super(TestCase, self).setUp()
+    super().setUp()
     tf.keras.backend.clear_session()
 
 
@@ -36,7 +31,6 @@ def main():
 
   This function should only be used if TensorFlow code is being tested.
   """
-  tf.compat.v1.enable_v2_behavior()
   tf.test.main()
 
 

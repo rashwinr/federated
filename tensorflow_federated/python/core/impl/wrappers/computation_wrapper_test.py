@@ -17,10 +17,12 @@ import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import test
 from tensorflow_federated.python.core.api import computation_types
-from tensorflow_federated.python.core.impl import context_base
-from tensorflow_federated.python.core.impl import context_stack_impl
+from tensorflow_federated.python.core.impl.context_stack import context_base
+from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
 from tensorflow_federated.python.core.impl.utils import function_utils
 from tensorflow_federated.python.core.impl.wrappers import computation_wrapper
+
+tf.compat.v1.enable_v2_behavior()
 
 
 class WrappedForTest(function_utils.ConcreteFunction):
@@ -35,7 +37,7 @@ class WrappedForTest(function_utils.ConcreteFunction):
     del name
     self._fn = function_utils.wrap_as_zero_or_one_arg_callable(
         fn, parameter_type, unpack)
-    super(WrappedForTest, self).__init__(
+    super().__init__(
         computation_types.FunctionType(parameter_type, tf.string),
         context_stack_impl.context_stack)
 
@@ -60,7 +62,7 @@ test_wrap = computation_wrapper.ComputationWrapper(WrappedForTest)
 
 class ComputationWrapperTest(test.TestCase):
 
-  # NOTE: Many tests below silence certain linter warnings. These warnings are
+  # Note: Many tests below silence certain linter warnings. These warnings are
   # not applicable, since it's the wrapper code, not not the dummy functions
   # that are being tested, so whether the specific function declarations used
   # here follow good practices is not really relevant. The purpose of the test

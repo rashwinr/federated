@@ -25,6 +25,8 @@ import tensorflow as tf
 from tensorflow_federated.python.simulation import hdf5_client_data
 from tensorflow_federated.python.simulation import transforming_client_data
 
+tf.compat.v1.enable_v2_behavior()
+
 TEST_DATA = {
     'CLIENT A': {
         'x': np.asarray([[1, 2], [3, 4], [5, 6]], dtype='i4'),
@@ -136,8 +138,8 @@ class TransformingClientDataTest(tf.test.TestCase, absltest.TestCase):
       index = int(match.group(2))
       for i, actual in enumerate(tf_dataset):
         actual = self.evaluate(actual)
-        expected = {k: v[i] for k, v in TEST_DATA[client].items()}
-        expected['x'] = expected['x'] + 10 * index
+        expected = {k: v[i].copy() for k, v in TEST_DATA[client].items()}
+        expected['x'] += 10 * index
         self.assertCountEqual(actual, expected)
         for k, v in actual.items():
           self.assertAllEqual(v, expected[k])
@@ -158,7 +160,7 @@ class TransformingClientDataTest(tf.test.TestCase, absltest.TestCase):
     for expected_data in TEST_DATA.values():
       for index in range(expansion_factor):
         for i in range(len(expected_data['x'])):
-          example = {k: v[i] for k, v in expected_data.items()}
+          example = {k: v[i].copy() for k, v in expected_data.items()}
           example['x'] += 10 * index
           expected_examples.append(example)
 
@@ -170,6 +172,4 @@ class TransformingClientDataTest(tf.test.TestCase, absltest.TestCase):
 
 
 if __name__ == '__main__':
-  # Need eager_mode to iterate over tf.data.Dataset.
-  tf.compat.v1.enable_v2_behavior()
   tf.test.main()

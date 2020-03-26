@@ -14,16 +14,9 @@
 # limitations under the License.
 """Library of TensorFlow graph-merging functions and associated helpers."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import uuid
 
-import six
-from six.moves import range
-from six.moves import zip
 import tensorflow as tf
 
 
@@ -65,14 +58,14 @@ class GraphSpec(object):
       raise TypeError(
           'graph_def must be of type `tf.compat.v1.GraphDef`; you have '
           'passed a value of type {}'.format(type(graph_def)))
-    if not isinstance(init_op, (six.string_types, type(None))):
+    if not isinstance(init_op, (str, type(None))):
       raise TypeError('init_op must be string type or `NoneType`; you '
                       'have passed a value of type {}'.format(type(init_op)))
     if not isinstance(in_names, (list, tuple)):
       raise TypeError('`in_names` must be a list or tuple; you have passed '
                       'a value of type {}'.format(type(in_names)))
     for name in in_names:
-      if not isinstance(name, six.string_types):
+      if not isinstance(name, str):
         raise TypeError(
             'Each entry in the `in_names` list must be of string type; you have '
             'passed an in_names list of {}'.format(in_names))
@@ -80,7 +73,7 @@ class GraphSpec(object):
       raise TypeError('`out_names` must be a list or tuple; you have '
                       'passed a value of type {}'.format(out_names))
     for name in out_names:
-      if not isinstance(name, six.string_types):
+      if not isinstance(name, str):
         raise TypeError(
             'Each entry in the `out_names` list must be of string type; '
             'you have passed an in_names list of {}'.format(out_names))

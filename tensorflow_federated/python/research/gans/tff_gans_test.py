@@ -77,8 +77,8 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
 
     # Note: Because this is a tf_computation, we preserve the Python
     # container types; this means we end up with different container
-    # types than those ServerState.from_anon_tuple gives us, here
-    # and in several places. See to-do on ServerState.from_anon_tuple.
+    # types than those ServerState.from_tff_result gives us, here
+    # and in several places. See to-do on ServerState.from_tff_result.
     server_state = initial_state_comp()
 
     # Validate the initial state of the server counters.
@@ -92,8 +92,6 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
     if with_dp:
       # Check DP averaging aggregation initial state is correct.
       dp_averaging_state = server_state.dp_averaging_state
-      self.assertAlmostEqual(dp_averaging_state.numerator_state.l2_norm_clip,
-                             BEFORE_DP_L2_NORM_CLIP)
       self.assertAlmostEqual(
           dp_averaging_state.numerator_state.sum_state.l2_norm_clip,
           BEFORE_DP_L2_NORM_CLIP)
@@ -142,7 +140,7 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
       if not with_dp:
         return dp_averaging_state
       new_dp_averaging_state = dp_averaging_state._asdict(recursive=True)
-      new_dp_averaging_state['numerator_state']['l2_norm_clip'] = (
+      new_dp_averaging_state['numerator_state']['sum_state']['l2_norm_clip'] = (
           UPDATE_DP_L2_NORM_CLIP)
       return new_dp_averaging_state
 
@@ -179,26 +177,23 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
       # passed as argument to server computation (compare before and after).
       initial_dp_averaging_state = server_state.dp_averaging_state
       self.assertAlmostEqual(
-          initial_dp_averaging_state.numerator_state.l2_norm_clip,
+          initial_dp_averaging_state.numerator_state.sum_state.l2_norm_clip,
           BEFORE_DP_L2_NORM_CLIP)
       new_dp_averaging_state = final_server_state.dp_averaging_state
       self.assertAlmostEqual(
-          new_dp_averaging_state.numerator_state.l2_norm_clip,
+          new_dp_averaging_state.numerator_state.sum_state.l2_norm_clip,
           UPDATE_DP_L2_NORM_CLIP)
 
   @parameterized.named_parameters(('no_dp', False), ('dp', True))
   def test_build_gan_training_process(self, with_dp):
     gan = _get_gan(with_dp)
     process = tff_gans.build_gan_training_process(gan)
-    server_state = gan_training_tf_fns.ServerState.from_anon_tuple(
+    server_state = gan_training_tf_fns.ServerState.from_tff_result(
         process.initialize())
 
     if with_dp:
       # Check that initial DP averaging aggregator state is correct.
       dp_averaging_state = server_state.dp_averaging_state
-      self.assertAlmostEqual(
-          dp_averaging_state['numerator_state']['l2_norm_clip'],
-          BEFORE_DP_L2_NORM_CLIP)
       self.assertAlmostEqual(
           dp_averaging_state['numerator_state']['sum_state']['l2_norm_clip'],
           BEFORE_DP_L2_NORM_CLIP)
@@ -223,7 +218,7 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
                                   client_gen_inputs, client_real_inputs)
 
     # TODO(b/123092620): Won't need to convert from AnonymousTuple, eventually.
-    server_state = gan_training_tf_fns.ServerState.from_anon_tuple(server_state)
+    server_state = gan_training_tf_fns.ServerState.from_tff_result(server_state)
 
     # Check that server counters have incremented.
     counters = server_state.counters
@@ -241,9 +236,6 @@ class TffGansTest(tf.test.TestCase, parameterized.TestCase):
       # Check that DP averaging aggregator state has updated properly over the
       # above rounds.
       dp_averaging_state = server_state.dp_averaging_state
-      self.assertAlmostEqual(
-          dp_averaging_state['numerator_state']['l2_norm_clip'],
-          AFTER_2_RDS_DP_L2_NORM_CLIP)
       self.assertAlmostEqual(
           dp_averaging_state['numerator_state']['sum_state']['l2_norm_clip'],
           AFTER_2_RDS_DP_L2_NORM_CLIP)

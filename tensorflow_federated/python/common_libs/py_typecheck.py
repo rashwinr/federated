@@ -14,16 +14,11 @@
 # limitations under the License.
 """Utility functions for checking Python types."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import builtins
 import collections
 import inspect
 
 import attr
-import six
-from six.moves import builtins
 
 
 def check_type(target, type_spec, label=None):
@@ -225,7 +220,7 @@ def is_name_value_pair(element, name_required=True, value_type=None):
   if not isinstance(element, collections.Sequence) or len(element) != 2:
     return False
   if ((name_required or element[0] is not None) and
-      not isinstance(element[0], six.string_types)):
+      not isinstance(element[0], str)):
     return False
   if value_type is not None and not isinstance(element[1], value_type):
     return False

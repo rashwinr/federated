@@ -14,14 +14,9 @@
 # limitations under the License.
 """Implementation of HDF5 backed ClientData."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 
 import h5py
-import six
 import tensorflow as tf
 
 from tensorflow_federated.python.common_libs import py_typecheck
@@ -61,14 +56,12 @@ class HDF5ClientData(client_data.ClientData):
     g = tf.Graph()
     with g.as_default():
       tf_dataset = self._create_dataset(self._client_ids[0])
-      self._element_type_structure = tf.data.experimental.get_structure(
-          tf_dataset)
+      self._element_type_structure = tf_dataset.element_spec
 
   def _create_dataset(self, client_id):
     return tf.data.Dataset.from_tensor_slices(
         collections.OrderedDict((name, ds.value) for name, ds in sorted(
-            six.iteritems(self._h5_file[HDF5ClientData._EXAMPLES_GROUP]
-                          [client_id]))))
+            self._h5_file[HDF5ClientData._EXAMPLES_GROUP][client_id].items())))
 
   @property
   def client_ids(self):
@@ -76,9 +69,8 @@ class HDF5ClientData(client_data.ClientData):
 
   def create_tf_dataset_for_client(self, client_id):
     tf_dataset = self._create_dataset(client_id)
-    tensor_utils.check_nested_equal(
-        tf.data.experimental.get_structure(tf_dataset),
-        self._element_type_structure)
+    tensor_utils.check_nested_equal(tf_dataset.element_spec,
+                                    self._element_type_structure)
     return tf_dataset
 
   @property

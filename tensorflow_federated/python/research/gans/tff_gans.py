@@ -42,7 +42,7 @@ def tensor_spec_for_batch(dummy_batch):
 
 
 # Set cmp=False to get a default hash function for tf.function.
-@attr.s(cmp=False, frozen=False)
+@attr.s(eq=False, frozen=False)
 class GanFnsAndTypes(object):
   """A container for functions and types need to build TFF GANs.
 
@@ -151,7 +151,7 @@ class GanFnsAndTypes(object):
           tff.utils.build_dp_aggregate(
               query=self.train_discriminator_dp_average_query,
               value_type_fn=lambda value: self.discriminator_weights_type,
-              from_anon_tuple_fn=lambda record: list(record)))  # pylint: disable=unnecessary-lambda
+              from_tff_result_fn=lambda record: list(record)))  # pylint: disable=unnecessary-lambda
 
 
 def build_server_initial_state_comp(gan: GanFnsAndTypes):
@@ -270,11 +270,10 @@ def build_gan_training_process(gan: GanFnsAndTypes):
   def run_one_round(server_state, server_gen_inputs, client_gen_inputs,
                     client_real_data):
     """The `tff.Computation` to be returned."""
-    # TODO(b/131429028): The federated_zip should be automatic.
-    from_server = tff.federated_zip(
-        gan_training_tf_fns.FromServer(
-            generator_weights=server_state.generator_weights,
-            discriminator_weights=server_state.discriminator_weights))
+
+    from_server = gan_training_tf_fns.FromServer(
+        generator_weights=server_state.generator_weights,
+        discriminator_weights=server_state.discriminator_weights)
     client_input = tff.federated_broadcast(from_server)
     client_outputs = tff.federated_map(
         client_computation, (client_gen_inputs, client_real_data, client_input))
@@ -306,9 +305,6 @@ def build_gan_training_process(gan: GanFnsAndTypes):
         # imagine wanting this.
         update_weight=tff.federated_sum(client_outputs.update_weight),
         counters=tff.federated_sum(client_outputs.counters))
-
-    # TODO(b/131839522): This federated_zip shouldn't be needed.
-    aggregated_client_output = tff.federated_zip(aggregated_client_output)
 
     server_state = tff.federated_map(
         server_computation, (server_state, server_gen_inputs,

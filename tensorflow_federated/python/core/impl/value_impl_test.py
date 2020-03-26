@@ -25,12 +25,12 @@ from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import computations
 from tensorflow_federated.python.core.api import placements
 from tensorflow_federated.python.core.api import value_base
-from tensorflow_federated.python.core.impl import context_stack_impl
 from tensorflow_federated.python.core.impl import federated_computation_context
 from tensorflow_federated.python.core.impl import reference_executor
-from tensorflow_federated.python.core.impl import transformations
 from tensorflow_federated.python.core.impl import value_impl
 from tensorflow_federated.python.core.impl.compiler import building_blocks
+from tensorflow_federated.python.core.impl.compiler import tree_transformations
+from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
 
 
 class ValueImplTest(parameterized.TestCase):
@@ -55,7 +55,7 @@ class ValueImplTest(parameterized.TestCase):
     self.assertIsInstance(y, value_base.Value)
     self.assertEqual(str(y.type_signature), 'int32')
     self.assertEqual(str(y), 'foo.bar')
-    z = x.baz
+    z = x['baz']
     self.assertEqual(str(z.type_signature), 'bool')
     self.assertEqual(str(z), 'foo.baz')
     with self.assertRaises(AttributeError):
@@ -92,8 +92,8 @@ class ValueImplTest(parameterized.TestCase):
     self.assertLen(z, 2)
     self.assertEqual(str(z[0]), 'foo')
     self.assertIs(value_impl.ValueImpl.get_comp(z[0]), x_comp)
-    self.assertEqual(str(z[1]), 'bar')
-    self.assertIs(value_impl.ValueImpl.get_comp(z[1]), y_comp)
+    self.assertEqual(str(z['y']), 'bar')
+    self.assertIs(value_impl.ValueImpl.get_comp(z['y']), y_comp)
     self.assertEqual(','.join(str(e) for e in iter(z)), 'foo,bar')
     with self.assertRaises(SyntaxError):
       z(10)
@@ -377,7 +377,7 @@ class ValueImplTest(parameterized.TestCase):
       return value_impl.to_value(cbb, None, context_stack_impl.context_stack)
 
     t = sequence_type(range(0, 50, 10))
-    comp, _ = transformations.uniquify_compiled_computation_names(
+    comp, _ = tree_transformations.uniquify_compiled_computation_names(
         value_impl.ValueImpl.get_comp(_to_value(t)))
     v = _to_value(comp)
 
@@ -444,6 +444,21 @@ class ValueImplTest(parameterized.TestCase):
     self.assertEqual(str(identity.type_signature), '<int32,bool>@SERVER')
     self.assertEqual(
         str(identity), 'federated_apply(<(x -> <x[0],x[1]>),test>)')
+
+  def test_getitem_key_resolution(self):
+    federated_value = value_impl.to_value(
+        building_blocks.Reference(
+            'test',
+            computation_types.FederatedType([('a', tf.int32), ('b', tf.bool)],
+                                            placements.SERVER, True)), None,
+        context_stack_impl.context_stack)
+    self.assertEqual(
+        str(federated_value.type_signature), '<a=int32,b=bool>@SERVER')
+    federated_attribute = federated_value['a']
+    self.assertEqual(str(federated_attribute.type_signature), 'int32@SERVER')
+    print(repr(federated_value))
+    with self.assertRaises(ValueError):
+      _ = federated_value['badkey']
 
   def test_getattr_resolution_federated_value_server(self):
     federated_value = value_impl.to_value(

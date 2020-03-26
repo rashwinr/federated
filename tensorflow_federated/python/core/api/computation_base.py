@@ -14,19 +14,12 @@
 # limitations under the License.
 """Defines the abstract interface for classes that represent computations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import abc
-
-import six
 
 from tensorflow_federated.python.core.api import typed_object
 
 
-@six.add_metaclass(abc.ABCMeta)
-class Computation(typed_object.TypedObject):
+class Computation(typed_object.TypedObject, metaclass=abc.ABCMeta):
   """An abstract interface for all classes that represent computations."""
 
   @abc.abstractmethod

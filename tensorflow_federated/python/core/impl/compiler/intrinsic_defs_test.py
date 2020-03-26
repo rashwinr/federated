@@ -48,16 +48,24 @@ class IntrinsicDefsTest(parameterized.TestCase):
 
   @parameterized.named_parameters(
       ('federated_broadcast', 'FEDERATED_BROADCAST', '(T@SERVER -> T@CLIENTS)'),
+      ('federated_eval_at_clients', 'FEDERATED_EVAL_AT_CLIENTS',
+       '(( -> T) -> {T}@CLIENTS)'),
+      ('federated_eval_at_server', 'FEDERATED_EVAL_AT_SERVER',
+       '(( -> T) -> T@SERVER)'),
       ('federated_map', 'FEDERATED_MAP',
        '(<(T -> U),{T}@CLIENTS> -> {U}@CLIENTS)'),
+      ('federated_secure_sum', 'FEDERATED_SECURE_SUM',
+       '(<{T}@CLIENTS,T> -> T@SERVER)'),
       ('federated_sum', 'FEDERATED_SUM', '({T}@CLIENTS -> T@SERVER)'),
       ('federated_zip_at_clients', 'FEDERATED_ZIP_AT_CLIENTS',
        '(<{T}@CLIENTS,{U}@CLIENTS> -> {<T,U>}@CLIENTS)'),
       ('federated_zip_at_server', 'FEDERATED_ZIP_AT_SERVER',
-       '(<T@SERVER,U@SERVER> -> <T,U>@SERVER)'))
+       '(<T@SERVER,U@SERVER> -> <T,U>@SERVER)'),
+  )
   def test_type_signature_strings(self, name, type_str):
-    self.assertEqual(
-        str(getattr(intrinsic_defs, name).type_signature), type_str)
+    intrinsic = getattr(intrinsic_defs, name)
+    self.assertEqual(intrinsic.type_signature.compact_representation(),
+                     type_str)
 
 
 if __name__ == '__main__':
